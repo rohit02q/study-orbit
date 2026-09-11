@@ -1,0 +1,9 @@
+{
+  "name": "study-orbit",
+  "private": true,
+  "type": "module",
+  "description": "Study Orbit — Everything Around Your Progress. No build step or dependencies for the app itself — this file only lets `node tests/run.mjs` resolve ES module imports.",
+  "scripts": {
+    "test": "node tests/run.mjs"
+  }
+}

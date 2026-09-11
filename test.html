@@ -1,0 +1,1887 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Test Analytics — JEE Performance Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,500;0,600;0,700;1,500&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          base: '#0a0d12',
+          surface: '#12161e',
+          surface2: '#171c26',
+          surface3: '#1d2330',
+          line: '#242b38',
+          line2: '#2c3444',
+          fg: '#e8eaef',
+          muted: '#8b93a3',
+          faint: '#5c6577',
+          gold: '#c9a24b',
+          goldSoft: '#8a7541',
+          good: '#4f9d74',
+          okay: '#5b8dc9',
+          warn: '#c98f3d',
+          bad: '#c1615a',
+        },
+        fontFamily: {
+          serif: ['Lora', 'Georgia', 'serif'],
+          sans: ['Inter', 'system-ui', 'sans-serif'],
+        },
+      },
+    },
+  };
+</script>
+<style>
+  html, body { background:#0a0d12; }
+  body { font-family:'Inter', system-ui, sans-serif; }
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:#242b38; border-radius:8px; }
+  ::-webkit-scrollbar-thumb:hover { background:#2c3444; }
+  .tabular { font-variant-numeric: tabular-nums; }
+  .chart-wrap { position:relative; height:260px; }
+  .chart-wrap-sm { position:relative; height:200px; }
+  input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); cursor:pointer; }
+  input:focus, select:focus, textarea:focus { outline:none; box-shadow:0 0 0 2px rgba(201,162,75,0.35); }
+  .fade-in { animation: fadeIn .25s ease; }
+  @keyframes fadeIn { from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:translateY(0);} }
+  @media (prefers-reduced-motion: reduce) { .fade-in { animation: none; } }
+</style>
+</head>
+<body class="bg-base text-fg antialiased">
+  <div id="root" class="flex min-h-screen"></div>
+
+<script>
+/* ============================================================
+   TEST ANALYTICS — JEE PERFORMANCE INTELLIGENCE SYSTEM
+   Single-file vanilla JS application. LocalStorage persistence.
+   ============================================================ */
+
+/* ---------------------- CONFIG ---------------------- */
+const STORAGE_KEY = 'studyos:tests';
+const STUDY_LOG_KEY = 'studyos:studySessions';
+
+const SUBJECT_KEYS = ['physics', 'chemistry', 'mathematics'];
+const SUBJECT_LABEL = { physics: 'Physics', chemistry: 'Chemistry', mathematics: 'Mathematics' };
+const SUBJECT_COLOR = { physics: '#5b8dc9', chemistry: '#c98f3d', mathematics: '#4f9d74' };
+const SUBJECT_SHORT = { physics: 'Phy', chemistry: 'Chem', mathematics: 'Maths' };
+
+const RANGE_LABEL = {
+  last1: 'Last Test', last3: 'Last 3 Tests', last5: 'Last 5 Tests', last7: 'Last 7 Tests',
+  last10: 'Last 10 Tests', last20: 'Last 20 Tests', all: 'All Time', custom: 'Custom Range'
+};
+
+const RANK_WEIGHTS = { efficiency: 0.4, accuracy: 0.3, consistency: 0.2, trend: 0.1 };
+
+const DEFAULT_SUBJECT = () => ({ totalQuestions: 25, correct: 0, incorrect: 0, markPerCorrect: 4, markPerIncorrect: 1 });
+
+/* ---------------------- UTILS ---------------------- */
+const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+const safeDiv = (a, b) => (b ? a / b : 0);
+const fmt = (n, d = 1) => (isFinite(n) ? n.toFixed(d) : '0.0');
+const fmtInt = (n) => (isFinite(n) ? Math.round(n) : 0);
+const uid = () => 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+const average = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+const stdDev = (arr) => {
+  if (arr.length < 2) return 0;
+  const m = average(arr);
+  return Math.sqrt(average(arr.map(x => (x - m) ** 2)));
+};
+const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const formatDate = (iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d)) return iso;
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+};
+const todayISO = () => new Date().toISOString().slice(0, 10);
+
+function slope(arr) {
+  const n = arr.length;
+  if (n < 2) return 0;
+  const xs = arr.map((_, i) => i);
+  const xbar = average(xs), ybar = average(arr);
+  let numr = 0, den = 0;
+  xs.forEach((x, i) => { numr += (x - xbar) * (arr[i] - ybar); den += (x - xbar) ** 2; });
+  return den ? numr / den : 0;
+}
+
+function pearson(xs, ys) {
+  const n = Math.min(xs.length, ys.length);
+  if (n < 3) return 0;
+  const mx = average(xs), my = average(ys);
+  let num = 0, dx2 = 0, dy2 = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - mx, dy = ys[i] - my;
+    num += dx * dy; dx2 += dx * dx; dy2 += dy * dy;
+  }
+  const den = Math.sqrt(dx2 * dy2);
+  return den ? num / den : 0;
+}
+
+// Sum of study-session minutes on dates strictly before `dateISO`, within
+// the last `windowDays` days (e.g. "the 3 days of prep going into this test").
+function studyMinutesBefore(sessions, dateISO, windowDays) {
+  const end = new Date(dateISO + 'T00:00:00');
+  const start = new Date(end); start.setDate(start.getDate() - windowDays);
+  let seconds = 0;
+  sessions.forEach(s => {
+    const d = new Date(s.date + 'T00:00:00');
+    if (d >= start && d < end) seconds += (s.duration || 0);
+  });
+  return seconds / 60;
+}
+
+/* ---------------------- STORAGE ---------------------- */
+const Store = {
+  load() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { console.error('Storage load failed', e); return []; }
+  },
+  save(tests) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tests)); }
+    catch (e) { console.error('Storage save failed', e); alert('Could not save data. Your browser storage may be full or disabled.'); }
+  }
+};
+
+// Read-only bridge into the study tracker app's session log. This app never
+// writes to this key — it only borrows it to correlate prep time with test
+// outcomes. Missing/malformed data degrades gracefully to an empty list.
+const StudyLogStore = {
+  load() {
+    try {
+      const raw = localStorage.getItem(STUDY_LOG_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter(s => s && s.status === 'completed' && s.date && typeof s.duration === 'number') : [];
+    } catch (e) { console.error('Study log read failed', e); return []; }
+  }
+};
+
+/* ---------------------- CALCULATIONS ---------------------- */
+const Calc = {
+  subject(s) {
+    const total = Math.max(0, num(s.totalQuestions));
+    const correct = Math.max(0, num(s.correct));
+    const incorrect = Math.max(0, num(s.incorrect));
+    const mc = s.markPerCorrect === undefined ? 4 : num(s.markPerCorrect);
+    const mi = s.markPerIncorrect === undefined ? 1 : num(s.markPerIncorrect);
+    const attempted = correct + incorrect;
+    const skipped = Math.max(0, total - attempted);
+    const marks = correct * mc - incorrect * mi;
+    const maxMarks = total * mc;
+    const attemptPct = safeDiv(attempted, total) * 100;
+    const accuracy = safeDiv(correct, attempted) * 100;
+    const completionRate = attemptPct;
+    const conversionRate = safeDiv(correct, total) * 100;
+    const marksPerAttempt = safeDiv(marks, attempted);
+    const negLost = incorrect * mi;
+    const posGained = correct * mc;
+    const netEfficiency = safeDiv(marks, maxMarks) * 100;
+    return { total, correct, incorrect, skipped, attempted, marks, maxMarks, attemptPct, accuracy, completionRate, conversionRate, marksPerAttempt, negLost, posGained, netEfficiency, mc, mi };
+  },
+  test(t) {
+    const subjects = {};
+    SUBJECT_KEYS.forEach(k => { subjects[k] = Calc.subject(t[k] || DEFAULT_SUBJECT()); });
+    const vals = Object.values(subjects);
+    const sum = (fn) => vals.reduce((a, x) => a + fn(x), 0);
+    const totalMarks = sum(x => x.marks);
+    const maxMarks = sum(x => x.maxMarks);
+    const totalCorrect = sum(x => x.correct);
+    const totalIncorrect = sum(x => x.incorrect);
+    const totalSkipped = sum(x => x.skipped);
+    const totalAttempted = sum(x => x.attempted);
+    const totalQuestions = sum(x => x.total);
+    const percentage = safeDiv(totalMarks, maxMarks) * 100;
+    const accuracy = safeDiv(totalCorrect, totalAttempted) * 100;
+    const attemptRate = safeDiv(totalAttempted, totalQuestions) * 100;
+    const completionRate = attemptRate;
+    const negLost = sum(x => x.negLost);
+    const posGained = sum(x => x.posGained);
+    const netEfficiency = percentage;
+    return {
+      subjects,
+      overall: { totalMarks, maxMarks, percentage, totalCorrect, totalIncorrect, totalSkipped, totalAttempted, totalQuestions, accuracy, attemptRate, completionRate, negLost, posGained, netEfficiency }
+    };
+  },
+  subjectWeighted(cs) { return 0.6 * cs.netEfficiency + 0.4 * cs.accuracy; },
+  consistencyLabel(cv) {
+    if (!isFinite(cv)) return { label: 'Insufficient Data', tone: 'muted' };
+    if (cv < 10) return { label: 'High Consistency', tone: 'good' };
+    if (cv < 20) return { label: 'Moderate Consistency', tone: 'warn' };
+    return { label: 'Low Consistency', tone: 'bad' };
+  },
+  momentumLabel(pct) {
+    if (pct > 15) return { label: 'Strongly Improving', tone: 'good' };
+    if (pct > 5) return { label: 'Improving', tone: 'good' };
+    if (pct > -5) return { label: 'Stable', tone: 'okay' };
+    if (pct > -15) return { label: 'Declining', tone: 'warn' };
+    return { label: 'Strongly Declining', tone: 'bad' };
+  },
+  ratingLabel(score) {
+    if (score >= 90) return { label: 'Outstanding', tone: 'good' };
+    if (score >= 80) return { label: 'Excellent', tone: 'good' };
+    if (score >= 70) return { label: 'Strong', tone: 'okay' };
+    if (score >= 58) return { label: 'Good', tone: 'okay' };
+    if (score >= 45) return { label: 'Average', tone: 'warn' };
+    if (score >= 30) return { label: 'Needs Improvement', tone: 'warn' };
+    return { label: 'Poor', tone: 'bad' };
+  },
+  perfTone(netEff) {
+    if (netEff >= 80) return 'good';
+    if (netEff >= 62) return 'okay';
+    if (netEff >= 42) return 'warn';
+    return 'bad';
+  }
+};
+
+/* ---------------------- RANGE / AGGREGATION ---------------------- */
+function getSortedTests(tests) {
+  return [...tests].sort((a, b) => new Date(a.date) - new Date(b.date) || a.createdAt - b.createdAt);
+}
+
+function filterByRange(tests, range, customStart, customEnd) {
+  let sorted = getSortedTests(tests);
+  if (range === 'custom') {
+    const s = customStart ? new Date(customStart) : null;
+    const e = customEnd ? new Date(customEnd) : null;
+    return sorted.filter(t => {
+      const d = new Date(t.date);
+      return (!s || d >= s) && (!e || d <= e);
+    });
+  }
+  if (range === 'all') return sorted;
+  const n = parseInt(String(range).replace('last', ''), 10) || sorted.length;
+  return sorted.slice(-n);
+}
+
+function buildAggregate(tests) {
+  const computed = tests.map(t => ({ test: t, c: Calc.test(t) }));
+  if (!computed.length) return null;
+  const n = computed.length;
+  const totalMarksArr = computed.map(x => x.c.overall.totalMarks);
+  const avgTotal = average(totalMarksArr);
+  const avgAcc = average(computed.map(x => x.c.overall.accuracy));
+  const avgAttempt = average(computed.map(x => x.c.overall.attemptRate));
+  const best = Math.max(...totalMarksArr);
+  const latest = totalMarksArr[totalMarksArr.length - 1];
+  const cv = avgTotal ? (stdDev(totalMarksArr) / avgTotal) * 100 : NaN;
+
+  const perSubject = {};
+  SUBJECT_KEYS.forEach(k => {
+    const scores = computed.map(x => x.c.subjects[k].marks);
+    const accs = computed.map(x => x.c.subjects[k].accuracy);
+    const attempts = computed.map(x => x.c.subjects[k].attemptPct);
+    const negs = computed.map(x => x.c.subjects[k].negLost);
+    const netEffs = computed.map(x => x.c.subjects[k].netEfficiency);
+    const avgScore = average(scores);
+    const sSlope = slope(scores.slice(-5));
+    const slopePct = avgScore ? (sSlope / (Math.abs(avgScore) || 1)) * 100 : 0;
+    perSubject[k] = {
+      scores, accs, attempts, negs, netEffs,
+      avgScore, avgAccuracy: average(accs), avgAttempt: average(attempts), avgNeg: average(negs), avgNetEff: average(netEffs),
+      std: stdDev(scores), max: Math.max(...scores), min: Math.min(...scores),
+      cv: avgScore ? (stdDev(scores) / Math.abs(avgScore)) * 100 : NaN,
+      slopePct
+    };
+  });
+
+  return { n, avgTotal, avgAcc, avgAttempt, best, latest, cv, perSubject, computed };
+}
+
+function improvementTrend(computed) {
+  const n = computed.length;
+  if (n < 2) return null;
+  const c = Math.max(1, Math.min(3, Math.floor(n / 2)));
+  if (n < c * 2) return null;
+  const recent = computed.slice(-c);
+  const prev = computed.slice(-2 * c, -c);
+  const avgRecent = average(recent.map(x => x.c.overall.totalMarks));
+  const avgPrev = average(prev.map(x => x.c.overall.totalMarks));
+  const change = avgPrev ? ((avgRecent - avgPrev) / avgPrev) * 100 : 0;
+  const direction = change > 3 ? 'improving' : change < -3 ? 'declining' : 'stable';
+  return { avgRecent, avgPrev, change, direction, count: c };
+}
+
+function accuracyAttemptQuadrant(avgAcc, avgAttempt) {
+  const highAcc = avgAcc >= 70, highAtt = avgAttempt >= 85;
+  if (highAcc && highAtt) return { label: 'Excellent Performance', tone: 'good', note: 'High accuracy with high attempt rate.' };
+  if (highAcc && !highAtt) return { label: 'Under-attempting', tone: 'okay', note: 'More marks possible — accuracy can support more attempts.' };
+  if (!highAcc && highAtt) return { label: 'Over-attempting', tone: 'bad', note: 'Negative marking risk from aggressive attempts.' };
+  return { label: 'Concept Confidence Issue', tone: 'warn', note: 'Low accuracy and low attempts suggest conceptual gaps.' };
+}
+
+/* ---------------------- SUBJECT RANKING ---------------------- */
+function rankSubjects(agg) {
+  const rows = SUBJECT_KEYS.map(k => {
+    const p = agg.perSubject[k];
+    const consistencyScore = 100 - clamp(isFinite(p.cv) ? p.cv : 50, 0, 100);
+    const trendScore = clamp((p.slopePct + 30) / 60 * 100, 0, 100);
+    const weighted = RANK_WEIGHTS.efficiency * clamp(p.avgNetEff, 0, 100)
+      + RANK_WEIGHTS.accuracy * clamp(p.avgAccuracy, 0, 100)
+      + RANK_WEIGHTS.consistency * consistencyScore
+      + RANK_WEIGHTS.trend * trendScore;
+    return { key: k, weighted, ...p, consistencyScore, trendScore };
+  });
+  rows.sort((a, b) => b.weighted - a.weighted);
+  return rows;
+}
+
+/* ---------------------- ADVANCED AI INSIGHTS ENGINE ----------------------
+   Statistical decision engine. Uses robust trend estimation, volatility,
+   risk-adjusted scoring and confidence-aware prioritisation.
+   It does NOT promise marks; it estimates high-leverage actions from the
+   student's own test history.
+----------------------------------------------------------------------- */
+
+function median(arr) {
+  if (!arr.length) return 0;
+  const a = [...arr].sort((x, y) => x - y);
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
+function percentile(arr, p) {
+  if (!arr.length) return 0;
+  const a = [...arr].sort((x, y) => x - y);
+  const pos = clamp(p, 0, 1) * (a.length - 1);
+  const lo = Math.floor(pos), hi = Math.ceil(pos);
+  return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (pos - lo);
+}
+
+function robustSlope(arr) {
+  if (arr.length < 2) return 0;
+  const slopes = [];
+  for (let i = 0; i < arr.length; i++) {
+    for (let j = i + 1; j < arr.length; j++) {
+      slopes.push((arr[j] - arr[i]) / (j - i));
+    }
+  }
+  return median(slopes); // Theil-Sen: resistant to one unusually bad/good test
+}
+
+function ema(arr, alpha = 0.45) {
+  if (!arr.length) return 0;
+  return arr.reduce((v, x, i) => i ? alpha * x + (1 - alpha) * v : x, arr[0]);
+}
+
+function zScore(value, arr) {
+  const sd = stdDev(arr);
+  return sd ? (value - average(arr)) / sd : 0;
+}
+
+function confidenceFromN(n) {
+  // Small samples should produce cautious recommendations.
+  return clamp(1 - Math.exp(-n / 4), 0.22, 0.95);
+}
+
+function advancedInsightFeatures(agg) {
+  const totalScores = agg.computed.map(x => x.c.overall.totalMarks);
+  const recentWindow = Math.min(5, totalScores.length);
+  const recentScores = totalScores.slice(-recentWindow);
+  const latest = totalScores[totalScores.length - 1];
+  const robust = robustSlope(recentScores);
+  const volatility = average(recentScores) ? stdDev(recentScores) / Math.abs(average(recentScores)) * 100 : 0;
+  const baseline = median(totalScores);
+  const latestZ = zScore(latest, totalScores);
+  const emaScore = ema(totalScores.slice(-Math.min(7, totalScores.length)));
+  return {
+    totalScores, latest, baseline, robust, volatility, latestZ, emaScore,
+    confidence: confidenceFromN(agg.n),
+    recentWindow
+  };
+}
+
+function estimateAttemptValue(p) {
+  // Expected value of one additional question at observed accuracy.
+  const prob = clamp(p.avgAccuracy / 100, 0, 1);
+  return prob * 4 - (1 - prob) * 1;
+}
+
+function generateInsights(agg) {
+  if (!agg) return [];
+  const candidates = [];
+  const n = agg.n;
+  const f = advancedInsightFeatures(agg);
+  const totalNeg = SUBJECT_KEYS.reduce((a, k) => a + agg.perSubject[k].avgNeg, 0);
+  const reliability = Math.round(f.confidence * 100);
+
+  const add = (priority, text, action, tag) => candidates.push({
+    priority: priority * (0.75 + 0.25 * f.confidence),
+    text, action, tag
+  });
+
+  // 1. Negative-mark risk
+  if (totalNeg > 2) {
+    add(9.6 + clamp(totalNeg / 8, 0, 1.4),
+      `Negative marking se score ka clear leak ho raha hai: average ${fmt(totalNeg, 1)} marks per test sirf galat attempts mein kat rahe hain.`,
+      `Two-pass strategy try karo: pehle sirf high-confidence questions solve karo, uske baad hi un questions ko attempt karo jinka expected value positive ho.`,
+      'High leverage');
+  }
+
+  // 2. Subject expected-value opportunities
+  SUBJECT_KEYS.forEach(k => {
+    const p = agg.perSubject[k];
+    const ev = estimateAttemptValue(p);
+    if (p.avgAccuracy >= 70 && p.avgAttempt < 82 && ev > 1.8) {
+      add(8.7,
+        `${SUBJECT_LABEL[k]} mein scoring capacity abhi use nahi ho rahi: accuracy ${fmt(p.avgAccuracy, 0)}% hai par sirf ${fmt(p.avgAttempt, 0)}% questions attempt ho rahe hain.`,
+        `${SUBJECT_LABEL[k]} mein dheere-dheere attempts badhao; itni accuracy ke saath extra attempts fayda hi denge, bas quality maintain rakhna.`,
+        'Capacity');
+    } else if (p.avgAttempt >= 85 && p.avgAccuracy < 62) {
+      add(9.2,
+        `${SUBJECT_LABEL[k]} mein aggressive-risk pattern dikh raha hai: attempt rate zyada hai (${fmt(p.avgAttempt, 0)}%) par accuracy kamzor hai (${fmt(p.avgAccuracy, 0)}%).`,
+        `${SUBJECT_LABEL[k]} mein answer mark karne se pehle confidence threshold thoda badhao — kam attempts par sahi zyada fayda denge.`,
+        'Risk control');
+    }
+  });
+
+  // 3. Robust trend: resistant to outliers
+  if (n >= 3) {
+    const direction = f.robust > 1.5 ? 'improving' : f.robust < -1.5 ? 'declining' : 'flat';
+    if (direction === 'declining') {
+      add(9.4,
+        `Recent trend girta hua dikh raha hai — roughly ${fmt(Math.abs(f.robust), 1)} marks per test kam ho rahe hain. Ye signal ek-do off-tests se nahi banta, real pattern hai.`,
+        `Sab kuch ek saath padhne ka pressure mat lo. Pehle sabse weak repeatable cheez pakdo — accuracy, selection ya completion — aur agle mock se pehle usi par targeted drill karo.`,
+        'Momentum');
+    } else if (direction === 'improving') {
+      add(7.4,
+        `Trend upar ja raha hai — roughly ${fmt(f.robust, 1)} marks per test ka genuine improvement dikh raha hai, sirf random noise nahi.`,
+        `Jo bhi is momentum ke peeche kaam kar raha hai use protect karo — abhi poori strategy badalne ki zaroorat nahi.`,
+        'Momentum');
+    }
+  }
+
+  // 4. Volatility / consistency
+  if (n >= 3 && f.volatility > 14) {
+    add(8.8,
+      `Score volatility abhi ${fmt(f.volatility, 1)}% hai — matlab tumhara best score abhi tak reliable, repeatable level nahi bana hai.`,
+      `Repeatability pe focus karo: question selection, time checkpoints aur review routine ko fix kar do, taaki kamzor tests bhi median ke kareeb aayein.`,
+      'Stability');
+  }
+
+  // 5. Latest performance anomaly
+  if (n >= 4 && Math.abs(f.latestZ) >= 1.15) {
+    const word = f.latestZ > 0 ? 'kaafi upar' : 'kaafi neeche';
+    add(7.7,
+      `Latest score tumhare usual range se statistically ${word} hai (history se ${fmt(Math.abs(f.latestZ), 1)} standard deviations door).`,
+      `Ise ek diagnostic signal ki tarah lo, permanent pehchaan mat maano. Latest test ko apne median pattern se compare karo aur dekho exactly kya alag hua.`,
+      'Anomaly');
+  }
+
+  // 6. Weakest subject with upside
+  const weakest = [...SUBJECT_KEYS].sort((a, b) => agg.perSubject[a].avgNetEff - agg.perSubject[b].avgNetEff)[0];
+  const strongest = [...SUBJECT_KEYS].sort((a, b) => agg.perSubject[b].avgNetEff - agg.perSubject[a].avgNetEff)[0];
+  if (agg.perSubject[weakest].avgNetEff + 8 < agg.perSubject[strongest].avgNetEff) {
+    const p = agg.perSubject[weakest];
+    add(8.5,
+      `${SUBJECT_LABEL[weakest]} tumhara sabse bada structural gap hai — score efficiency sirf ${fmt(p.avgNetEff, 0)}% hai, jabki sabse strong subject mein ${fmt(agg.perSubject[strongest].avgNetEff, 0)}% hai.`,
+      `Pehle se strong subject ko aur maximize karne ke bajaye, ${SUBJECT_LABEL[weakest]} ke sabse chhote repeatable weak point par focus karo.`,
+      'Bottleneck');
+  }
+
+  // 7. Subject instability
+  if (n >= 3) {
+    const volatile = [...SUBJECT_KEYS].sort((a, b) => agg.perSubject[b].cv - agg.perSubject[a].cv)[0];
+    const vp = agg.perSubject[volatile];
+    if (isFinite(vp.cv) && vp.cv > 22) {
+      add(8.1,
+        `${SUBJECT_LABEL[volatile]} tests ke beech kaafi unstable hai (variation ${fmt(vp.cv, 0)}%), jisse planning mushkil ho jaati hai.`,
+        `Repeat hone wale question-types ka ek fixed error-log banao, aur timed mini-tests mein practice karo — isse unpredictable performance ek stable baseline mein badlegi.`,
+        'Repeatability');
+    }
+  }
+
+  // 8. Accuracy trend versus attempt trend divergence
+  SUBJECT_KEYS.forEach(k => {
+    const p = agg.perSubject[k];
+    if (p.accs.length >= 3) {
+      const accSlope = robustSlope(p.accs.slice(-5));
+      const attSlope = robustSlope(p.attempts.slice(-5));
+      if (accSlope < -1.2 && attSlope > 1.2) {
+        add(8.9,
+          `${SUBJECT_LABEL[k]} mein attempts badh rahe hain lekin accuracy gir rahi hai — ye classic efficiency divergence hai.`,
+          `Kuch waqt ke liye attempts badhana rok do aur pehle accuracy wapas build karo; jab wo stable ho jaye tabhi attempts controlled tareeke se wapas badhao.`,
+          'Efficiency');
+      }
+    }
+  });
+
+  // 9. Negative-mark concentration by subject
+  const negLeader = [...SUBJECT_KEYS].sort((a, b) => agg.perSubject[b].avgNeg - agg.perSubject[a].avgNeg)[0];
+  const negP = agg.perSubject[negLeader];
+  if (totalNeg > 2 && negP.avgNeg / totalNeg > 0.48) {
+    add(8.3,
+      `${SUBJECT_LABEL[negLeader]} akela hi average negative-mark loss ka ${fmt(negP.avgNeg / totalNeg * 100, 0)}% contribute karta hai — matlab problem concentrated hai, har jagah nahi.`,
+      `Error analysis ${SUBJECT_LABEL[negLeader]} se shuru karo; sabse bade source ko fix karna, sab subjects mein equal revision karne se zyada efficient hai.`,
+      'Concentration');
+  }
+
+  // 10. Positive signal / reliable anchor
+  const reliable = [...SUBJECT_KEYS].sort((a, b) => {
+    const A = agg.perSubject[a], B = agg.perSubject[b];
+    return (B.avgAccuracy - (isFinite(B.cv) ? B.cv * .25 : 12)) - (A.avgAccuracy - (isFinite(A.cv) ? A.cv * .25 : 12));
+  })[0];
+  add(5.8,
+    `${SUBJECT_LABEL[reliable]} abhi tumhara sabse reliable anchor hai — accuracy aur consistency dono ache hain.`,
+    `Is subject ko stable rakho aur zyada improvement-energy sabse high-leverage bottleneck ki taraf lagao.`,
+    'Strength');
+
+  // Deduplicate similar signals and keep only the most important 5–10.
+  candidates.sort((a, b) => b.priority - a.priority);
+  const unique = [];
+  const seen = new Set();
+  for (const c of candidates) {
+    const key = c.tag + ':' + (c.text.match(/Physics|Chemistry|Mathematics/) || ['overall'])[0];
+    if (!seen.has(key)) { unique.push(c); seen.add(key); }
+    if (unique.length >= 10) break;
+  }
+
+  // If fewer than 5 meaningful insights exist, do NOT add filler.
+  // Sparse data should remain honest.
+  unique.confidence = reliability;
+  unique.features = f;
+  return unique;
+}
+
+// A randomized, Hinglish "AI mentor" summary. It picks from several
+// phrase-pools each render — so it never reads identical twice — but every
+// pool is gated by the actual computed trend direction, so the randomness
+// is in *wording*, never in the underlying verdict. Grounded numbers
+// (test count, confidence, real action text) are always injected verbatim.
+function generateExecutiveConclusion(agg, insights) {
+  if (!agg || !insights.length) return '';
+  const top = insights.slice(0, Math.min(3, insights.length));
+  const f = advancedInsightFeatures(agg);
+  const actions = top.map(x => x.action).filter(Boolean);
+  const bestAction = actions[0] || 'thoda aur data collect karo aur ek waqt mein sirf ek measurable cheez improve karo';
+  const secondAction = actions[1] || '';
+  const confidence = insights.confidence || 50;
+  const direction = f.robust > 1.5 ? 'improving' : f.robust < -1.5 ? 'declining' : 'stable';
+
+  const openings = {
+    improving: [
+      'Trajectory abhi upar ki taraf ja rahi hai — momentum tumhare favour mein hai.',
+      'Numbers saaf keh rahe hain ki tum sahi direction mein badh rahe ho.',
+      'Recent tests genuine improvement dikha rahe hain, sirf ek achha din nahi.',
+    ],
+    declining: [
+      'Trajectory abhi thodi neeche ja rahi hai — isko turant address karna zaroori hai.',
+      'Recent pattern ek dip dikha raha hai jise ignore nahi karna chahiye.',
+      'Numbers ek clear correction maang rahe hain — panic nahi, sirf focus.',
+    ],
+    stable: [
+      'Trajectory abhi stable hai — na tezi se upar, na neeche.',
+      'Performance abhi ek steady zone mein hai, jo galat nahi hai.',
+      'Scores consistent hain, bas abhi acceleration missing hai.',
+    ],
+  };
+
+  const middleVariants = [
+    `Par sabse badi opportunity har jagah zyada mehnat karna nahi hai — un chunindaa decisions ko sudharna hai jo baar-baar tumhara score control karte hain. ${agg.n} test${agg.n === 1 ? '' : 's'} ke data ke basis par, sabse high-leverage move hai: ${bestAction}${secondAction ? `, uske baad ${secondAction}` : ''}.`,
+    `Zyada mehnat se zyada important hai sahi jagah mehnat karna. ${agg.n} test${agg.n === 1 ? '' : 's'} ke pattern ke hisab se, abhi sabse zyada fayda dega: ${bestAction}${secondAction ? `, phir ${secondAction}` : ''}.`,
+    `Har subject ek saath thik karne ki koshish mat karo. ${agg.n} test${agg.n === 1 ? '' : 's'} ka data batata hai ki sabse pehle karne wali cheez hai: ${bestAction}${secondAction ? `, uske baad ${secondAction}` : ''}.`,
+  ];
+
+  const closings = [
+    `Ye ek confidence-aware suggestion hai (${confidence}% data confidence), guarantee nahi — par sabse bade signal par consistently kaam karna, ek saath sab kuch badalne se kahin zyada asar dikhata hai.`,
+    `Data abhi ${confidence}% confident hai — jitne aur tests add honge, ye analysis utni hi sharp hoti jayegi.`,
+    `Ise guarantee mat samjho, ek smart direction samjho (${confidence}% confidence) — chhote, measurable changes hi asli farak dalte hain, overnight overhaul nahi.`,
+  ];
+
+  return `${pickRandom(openings[direction])} ${pickRandom(middleVariants)} Apne sabse strong subject ko ek stable anchor ki tarah use karo, aur dekho ki ye change agle 2–3 tests mein result deta hai ya nahi — tabhi dobara adjust karna. ${pickRandom(closings)}`;
+}
+
+/* ============================================================
+   NEXT TEST GAME PLAN — priority actions, attempt-strategy score,
+   and a one-step-ahead score prediction. All derived purely from the
+   student's own test history (no external benchmarks assumed).
+   ============================================================ */
+
+// Per-subject next-test priority: a single calibrated action, chosen from
+// a decision tree that looks at accuracy, attempt rate AND the recent
+// accuracy trend (robust slope) together, rather than any one signal alone.
+function computeNextTestPriority(agg) {
+  return SUBJECT_KEYS.map((k) => {
+    const p = agg.perSubject[k];
+    const accSlope = p.accs.length >= 3 ? robustSlope(p.accs.slice(-5)) : 0;
+    let action, tone, detail;
+
+    if (p.avgAttempt >= 80 && p.avgAccuracy < 58) {
+      action = 'Unnecessary attempts kam karo';
+      tone = 'bad';
+      detail = `Attempt rate ${fmt(p.avgAttempt, 0)}% hai lekin accuracy sirf ${fmt(p.avgAccuracy, 0)}% — galat guesses seedha negative marking mein ja rahe hain.`;
+    } else if (p.avgAccuracy >= 72 && p.avgAttempt < 80) {
+      action = 'Attempts badhao';
+      tone = 'good';
+      detail = `Accuracy solid hai (${fmt(p.avgAccuracy, 0)}%) par sirf ${fmt(p.avgAttempt, 0)}% questions attempt ho rahe — thoda aggressive ho sakte ho.`;
+    } else if (accSlope < -1.4) {
+      action = 'Accuracy pe wapas focus karo';
+      tone = 'warn';
+      detail = `Pichhle tests mein accuracy girti dikh rahi hai — attempts badhane se pehle concepts revise karo.`;
+    } else if (p.avgAccuracy < 55) {
+      action = 'Basics pehle pakka karo';
+      tone = 'bad';
+      detail = `Accuracy abhi sirf ${fmt(p.avgAccuracy, 0)}% hai — attempts badhana ulta nuksaan karega, pehle fundamentals clear karo.`;
+    } else {
+      action = 'Accuracy maintain karo';
+      tone = 'okay';
+      detail = `Abhi ka balance (${fmt(p.avgAccuracy, 0)}% accuracy, ${fmt(p.avgAttempt, 0)}% attempt) theek chal raha hai — isi ko stable rakho.`;
+    }
+    return { key: k, action, tone, detail };
+  });
+}
+
+// A single 0–100 "Attempt Strategy" score blending five signals: how well
+// calibrated the attempt rate is against accuracy (an ideal-attempt line,
+// not just "more is better"), raw accuracy, negative-marking control,
+// how well that calibration holds subject-by-subject, and recent momentum.
+function computeAttemptStrategyScore(agg) {
+  const idealAttemptFor = (accuracy) => clamp(35 + accuracy * 0.65, 35, 100);
+
+  const calibration = 100 - clamp(Math.abs(agg.avgAttempt - idealAttemptFor(agg.avgAcc)), 0, 100);
+  const totalNeg = SUBJECT_KEYS.reduce((a, k) => a + agg.perSubject[k].avgNeg, 0);
+  const negControl = 100 - clamp(totalNeg * 6, 0, 100);
+  const subjectAlignment = average(SUBJECT_KEYS.map((k) => {
+    const p = agg.perSubject[k];
+    return 100 - clamp(Math.abs(p.avgAttempt - idealAttemptFor(p.avgAccuracy)), 0, 100);
+  }));
+  const f = advancedInsightFeatures(agg);
+  const trendComp = clamp(50 + f.robust * 3, 0, 100);
+
+  const score = clamp(
+    0.30 * agg.avgAcc + 0.25 * calibration + 0.20 * negControl + 0.15 * subjectAlignment + 0.10 * trendComp,
+    0, 100
+  );
+
+  let classification, tone, strategyForNext;
+  if (score >= 80) {
+    classification = 'Sabse Behtar Zone'; tone = 'good';
+    strategyForNext = 'Ye calibration kaam kar raha hai — next test mein wahi approach repeat karo, kuch naya try mat karo.';
+  } else if (score >= 65) {
+    classification = 'Balanced Approach'; tone = 'okay';
+    strategyForNext = 'Overall theek hai — pehle high-confidence questions lock karo, phir hi borderline wale attempt karo.';
+  } else if (score >= 50) {
+    classification = 'Calibration Chahiye'; tone = 'warn';
+    strategyForNext = 'Attempt aur accuracy ka balance thoda off hai — next test se pehle consciously decide karo kaunse questions "sure-shot" hain.';
+  } else {
+    classification = 'High Risk Zone'; tone = 'bad';
+    strategyForNext = 'Abhi risk kaafi zyada hai — next test mein pehle accuracy secure karo, attempts sirf usi ke baad badhao.';
+  }
+  return { score: Math.round(score), classification, tone, strategyForNext };
+}
+
+// One-step-ahead score prediction: EMA (recent-weighted average) plus the
+// robust (Theil-Sen) slope projected one test forward, banded by recent
+// volatility so the range narrows as the student becomes more consistent.
+function predictNextTestScore(agg) {
+  const f = advancedInsightFeatures(agg);
+  const latestTest = agg.computed[agg.computed.length - 1].c.overall;
+  const maxMarks = latestTest.maxMarks || 300;
+
+  const raw = f.emaScore + f.robust;
+  const predicted = clamp(raw, 0, maxMarks);
+  const recentForBand = f.totalScores.slice(-Math.min(6, f.totalScores.length));
+  const band = Math.max(maxMarks * 0.03, stdDev(recentForBand) * (1 - f.confidence * 0.35));
+  const low = clamp(predicted - band, 0, maxMarks);
+  const high = clamp(predicted + band, 0, maxMarks);
+  const confidencePct = Math.round(clamp(f.confidence * (1 - f.volatility / 150), 0.15, 0.95) * 100);
+
+  return { predicted: Math.round(predicted), low: Math.round(low), high: Math.round(high), maxMarks, confidencePct };
+}
+
+/* ============================================================
+   STUDY-LOG CROSSOVER — pulls in studyos:studySessions (the study
+   tracker app's own data) to see whether pre-test prep volume actually
+   moves the needle on score, using a real Pearson correlation rather
+   than a guess.
+   ============================================================ */
+function buildPrepPerformanceLink(tests, studySessions, windowDays = 3) {
+  if (!studySessions.length) {
+    return { available: false, text: 'Abhi study session data nahi mila (ya study tracker app mein koi session log nahi hai), isliye ye link nikal nahi sake. Study log maujood hote hi ye analysis khud-ba-khud shuru ho jayega.' };
+  }
+  const sorted = getSortedTests(tests);
+  if (sorted.length < 4) {
+    return { available: false, text: 'Is analysis ke liye kam se kam 4 tests chahiye taaki prep-time aur score ka pattern reliably dikh sake. Abhi thode aur tests add karo.' };
+  }
+
+  const prepMinutes = sorted.map((t) => studyMinutesBefore(studySessions, t.date, windowDays));
+  const percentages = sorted.map((t) => Calc.test(t).overall.percentage);
+  if (stdDev(prepMinutes) < 1) {
+    return { available: false, text: 'Har test se pehle lagbhag same amount padhai hui hai, isliye prep-time aur score ka koi clear pattern nikalna abhi mushkil hai.' };
+  }
+
+  const r = pearson(prepMinutes, percentages);
+  const med = median(prepMinutes);
+  const highPrepScores = percentages.filter((_, i) => prepMinutes[i] >= med);
+  const lowPrepScores = percentages.filter((_, i) => prepMinutes[i] < med);
+  const highAvg = average(highPrepScores), lowAvg = average(lowPrepScores);
+  const gap = highAvg - lowAvg;
+
+  let text;
+  if (r >= 0.45 && gap > 3) {
+    text = `Data saaf keh raha hai: jin tests se pehle ${windowDays} din mein zyada padhai hui (avg ${fmtInt(med)}+ min), unme score average ${fmt(highAvg, 0)}% raha, jabki kam-prep wale tests mein sirf ${fmt(lowAvg, 0)}%. Correlation strong hai (r = ${fmt(r, 2)}) — matlab prep window seriously matter karta hai. Agle test se pehle bhi ${windowDays} din pehle se revision shuru kar do.`;
+  } else if (r >= 0.2) {
+    text = `Halka sa positive pattern dikh raha hai (r = ${fmt(r, 2)}) — zyada prep wale tests thoda better gaye hain (${fmt(highAvg, 0)}% vs ${fmt(lowAvg, 0)}%), lekin ye kaafi strong signal nahi hai abhi. Kuch aur tests ke baad ye trend aur clear hoga.`;
+  } else if (r <= -0.2) {
+    text = `Interesting pattern: zyada last-moment padhai wale tests mein score thoda kam raha hai (${fmt(lowAvg, 0)}% low-prep vs ${fmt(highAvg, 0)}% high-prep — inverted). Ho sakta hai ki last-minute cramming se fatigue ya panic aa raha ho. Spaced revision (test se kai din pehle shuru) try karo, sirf ek raat pehle nahi.`;
+  } else {
+    text = `Prep-time aur score ke beech koi clear statistical link abhi nahi dikh raha (r = ${fmt(r, 2)}). Iska matlab shayad quantity se zyada quality of revision matter kar rahi hai tumhare case mein — kitna padha usse zyada kya aur kaise padha, wo dekhna hoga.`;
+  }
+  return { available: true, r, highAvg, lowAvg, medianPrepMinutes: med, text };
+}
+
+function buildTestingRhythm(tests) {
+  const sorted = getSortedTests(tests);
+  if (sorted.length < 3) {
+    return { available: false, text: 'Testing rhythm dekhne ke liye kam se kam 3 tests chahiye. Abhi thode aur mocks add karo, phir ye pattern nikal ke dikhayenge.' };
+  }
+  const gaps = [];
+  for (let i = 1; i < sorted.length; i++) {
+    gaps.push(Math.round((new Date(sorted[i].date) - new Date(sorted[i - 1].date)) / 86400000));
+  }
+  const avgGap = average(gaps);
+  const lastDate = new Date(sorted[sorted.length - 1].date);
+  const daysSinceLast = Math.round((new Date(todayISO()) - lastDate) / 86400000);
+
+  let text, tone;
+  if (avgGap <= 7) {
+    tone = 'good';
+    text = `Har ${fmt(avgGap, 0)} din mein average ek test ho raha hai — weekly testing rhythm strong hai, isse exam-day pressure handle karna aasan hota hai. Yahi maintain karo.`;
+  } else if (avgGap <= 14) {
+    tone = 'okay';
+    text = `Average gap ${fmt(avgGap, 0)} din ka hai test-to-test — theek hai, par thoda aur frequent (weekly ke kareeb) karoge to real exam ki feel jaldi milegi.`;
+  } else {
+    tone = 'warn';
+    text = `Tests ke beech average ${fmt(avgGap, 0)} din ka gap hai — ye kaafi zyada hai. Sirf theory padhna kaafi nahi, regular testing hi asli weak points dikhata hai.`;
+  }
+  if (daysSinceLast > Math.max(14, avgGap * 1.6)) {
+    text += ` Last test ko ${daysSinceLast} din ho chuke hain — ab agla test schedule karne ka time aa gaya hai.`;
+    tone = 'warn';
+  }
+  return { available: true, avgGap, daysSinceLast, tone, text };
+}
+
+/* ---------------------- IMPROVEMENT OPPORTUNITIES ---------------------- */
+function improvementOpportunities(latestComputed) {
+  if (!latestComputed) return [];
+  const ops = [];
+  const o = latestComputed.overall;
+
+  if (o.negLost > 0) {
+    ops.push({ text: 'Reduce negative marking to zero', gain: o.negLost });
+  }
+
+  SUBJECT_KEYS.forEach(k => {
+    const s = latestComputed.subjects[k];
+    if (s.attempted > 0 && s.accuracy < 90) {
+      const extraCorrect = s.attempted * 0.10;
+      const gain = extraCorrect * s.mc - extraCorrect * (s.mi * 0); // treat as pure conversion of existing attempts
+      ops.push({ text: `Improve ${SUBJECT_LABEL[k]} accuracy by 10%`, gain });
+    }
+    if (s.skipped > 0 && s.accuracy >= 60) {
+      const extra = Math.min(s.skipped, 3);
+      const gain = extra * (s.accuracy / 100) * s.mc - extra * (1 - s.accuracy / 100) * s.mi;
+      if (gain > 0) ops.push({ text: `Attempt ${extra} more ${SUBJECT_LABEL[k]} question${extra > 1 ? 's' : ''} at your current accuracy`, gain });
+    }
+  });
+
+  ops.sort((a, b) => b.gain - a.gain);
+  return ops.filter(o => o.gain >= 0.5).slice(0, 4);
+}
+
+/* ---------------------- TEST REPORT (single test) ---------------------- */
+function buildTestReport(test, allTests) {
+  const c = Calc.test(test);
+  const subjRows = SUBJECT_KEYS.map(k => ({ key: k, ...c.subjects[k], weighted: Calc.subjectWeighted(c.subjects[k]) }));
+  const strongest = [...subjRows].sort((a, b) => b.weighted - a.weighted)[0];
+  const weakest = [...subjRows].sort((a, b) => a.weighted - b.weighted)[0];
+
+  let biggestProblem;
+  const negShare = safeDiv(c.overall.negLost, c.overall.posGained || 1) * 100;
+  if (negShare > 15) {
+    biggestProblem = `Negative marking is the biggest drag on this attempt — you lost ${fmtInt(c.overall.negLost)} marks to incorrect answers, roughly ${fmt(negShare, 0)}% of the marks you gained.`;
+  } else if (weakest.accuracy < 50 && weakest.attempted > 0) {
+    biggestProblem = `${SUBJECT_LABEL[weakest.key]} accuracy of ${fmt(weakest.accuracy, 0)}% points to conceptual gaps rather than a lack of attempts.`;
+  } else if (c.overall.attemptRate < 70) {
+    biggestProblem = `Overall attempt rate was only ${fmt(c.overall.attemptRate, 0)}% — under-attempting likely cost more marks than any accuracy issue.`;
+  } else {
+    biggestProblem = 'No single dominant weakness — the attempt was reasonably balanced. Focus on speed and precision drills for incremental gains.';
+  }
+
+  const bestMetric = strongest.accuracy >= 85
+    ? `${SUBJECT_LABEL[strongest.key]} accuracy of ${fmt(strongest.accuracy, 0)}%`
+    : `${SUBJECT_LABEL[strongest.key]} score efficiency of ${fmt(strongest.netEfficiency, 0)}%`;
+
+  const verdict = `${SUBJECT_LABEL[strongest.key]} was the standout subject today with ${fmt(strongest.accuracy, 0)}% accuracy and a net efficiency of ${fmt(strongest.netEfficiency, 0)}%. `
+    + `${SUBJECT_LABEL[weakest.key]} needs the most attention — ${weakest.negLost > weakest.posGained * 0.15 ? 'incorrect attempts caused significant negative loss' : weakest.attemptPct < 70 ? 'low completion limited the score' : 'accuracy fell short of the other subjects'}. `
+    + `Overall this test converts to a net efficiency of ${fmt(c.overall.netEfficiency, 0)}%.`;
+
+  // Rating: use history for consistency/trend component if available
+  const sorted = getSortedTests(allTests);
+  const idx = sorted.findIndex(t => t.id === test.id);
+  const priorTests = sorted.slice(0, idx);
+  let consistencyComp = 60, trendComp = 60;
+  if (priorTests.length >= 1) {
+    const priorAgg = buildAggregate([...priorTests, test]);
+    if (priorAgg) {
+      consistencyComp = 100 - clamp(isFinite(priorAgg.cv) ? priorAgg.cv : 40, 0, 100);
+      const t = improvementTrend(priorAgg.computed);
+      trendComp = t ? clamp(50 + t.change, 0, 100) : 60;
+    }
+  }
+  const rating = clamp(
+    0.35 * c.overall.netEfficiency +
+    0.25 * c.overall.accuracy +
+    0.15 * c.overall.attemptRate +
+    0.15 * clamp(100 - negShare, 0, 100) +
+    0.05 * consistencyComp +
+    0.05 * trendComp
+    , 0, 100);
+
+  const opportunities = improvementOpportunities(c);
+
+  return { c, subjRows, strongest, weakest, biggestProblem, bestMetric, verdict, rating, opportunities };
+}
+
+/* ============================================================
+   APPLICATION STATE
+   ============================================================ */
+const state = {
+  tests: Store.load(),
+  view: 'dashboard', // dashboard | form | history | report
+  range: 'all',
+  customStart: '', customEnd: '',
+  editingId: null,
+  viewingId: null,
+  search: '',
+  formErrors: {},
+  mobileNavOpen: false,
+};
+
+let charts = {}; // id -> Chart instance
+function makeChart(id, config) {
+  const canvas = document.getElementById(id);
+  if (!canvas) return;
+  if (charts[id]) { charts[id].destroy(); }
+  charts[id] = new Chart(canvas.getContext('2d'), config);
+}
+
+const chartDefaults = {
+  gridColor: 'rgba(255,255,255,0.06)',
+  tickColor: '#8b93a3',
+  font: { family: 'Inter', size: 11 }
+};
+
+/* ============================================================
+   ICONS (inline SVG, minimal line icons)
+   ============================================================ */
+const Icon = {
+  dashboard: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>`,
+  add: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
+  history: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12a9 9 0 1 0 2.6-6.3"/><path d="M3 5v5h5"/><path d="M12 7v5l3.5 2"/></svg>`,
+  back: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>`,
+  search: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>`,
+  menu: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>`,
+  close: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>`,
+};
+
+/* Tone -> classes */
+const TONE = {
+  good: { text: 'text-good', bg: 'bg-good/10', border: 'border-good/30', bar: 'bg-good' },
+  okay: { text: 'text-okay', bg: 'bg-okay/10', border: 'border-okay/30', bar: 'bg-okay' },
+  warn: { text: 'text-warn', bg: 'bg-warn/10', border: 'border-warn/30', bar: 'bg-warn' },
+  bad: { text: 'text-bad', bg: 'bg-bad/10', border: 'border-bad/30', bar: 'bg-bad' },
+  muted: { text: 'text-muted', bg: 'bg-white/5', border: 'border-line', bar: 'bg-faint' },
+};
+
+/* ============================================================
+   RENDER: SHELL / NAV
+   ============================================================ */
+function NavItem(view, icon, label) {
+  const active = state.view === view || (state.view === 'form' && view === 'form-fake');
+  const isActive = state.view === view;
+  return `<button onclick="App.setView('${view}')" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm transition-colors ${isActive ? 'bg-surface3 text-fg' : 'text-muted hover:text-fg hover:bg-surface2'}">
+    <span class="${isActive ? 'text-gold' : ''}">${icon}</span>
+    <span class="font-medium">${label}</span>
+  </button>`;
+}
+
+function Sidebar() {
+  return `
+  <aside class="hidden md:flex md:flex-col w-60 shrink-0 border-r border-line bg-surface/60 h-screen sticky top-0 px-4 py-5">
+    <div class="flex items-center gap-2.5 px-1.5 mb-8">
+      <div class="w-8 h-8 rounded-md bg-gold/15 border border-gold/30 flex items-center justify-center">
+        <span class="font-serif text-gold text-sm font-semibold">TA</span>
+      </div>
+      <div>
+        <div class="font-serif text-[15px] leading-tight text-fg">Test Analytics</div>
+        <div class="text-[11px] text-faint leading-tight">JEE Performance Intelligence</div>
+      </div>
+    </div>
+    <nav class="flex flex-col gap-1">
+      ${NavItem('dashboard', Icon.dashboard, 'Dashboard')}
+      ${NavItem('form', Icon.add, 'Add Test')}
+      ${NavItem('history', Icon.history, 'Test History')}
+    </nav>
+    <div class="mt-auto pt-4 border-t border-line">
+      <button onclick="window.location.href='/index.html'" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm text-muted hover:text-fg hover:bg-surface2 transition-colors mb-3">
+        <span>${Icon.back}</span>
+        <span class="font-medium">Back</span>
+      </button>
+      <div class="text-[11px] text-faint px-1.5 leading-relaxed">${state.tests.length} test${state.tests.length === 1 ? '' : 's'} logged<br/>Stored locally in your browser</div>
+    </div>
+  </aside>`;
+}
+
+function MobileTopbar() {
+  const titles = { dashboard: 'Dashboard', form: state.editingId ? 'Edit Test' : 'Add Test', history: 'Test History', report: 'Test Report' };
+  return `
+  <div class="md:hidden sticky top-0 z-30 flex items-center justify-between px-4 h-14 border-b border-line bg-base/95 backdrop-blur">
+    <div class="flex items-center gap-2">
+      <div class="w-7 h-7 rounded-md bg-gold/15 border border-gold/30 flex items-center justify-center">
+        <span class="font-serif text-gold text-xs font-semibold">TA</span>
+      </div>
+      <span class="font-serif text-sm text-fg">${titles[state.view] || 'Test Analytics'}</span>
+    </div>
+    <button onclick="App.toggleMobileNav()" class="text-muted p-1">${state.mobileNavOpen ? Icon.close : Icon.menu}</button>
+  </div>
+  ${state.mobileNavOpen ? `
+  <div class="md:hidden fixed inset-0 z-40 bg-black/60" onclick="App.toggleMobileNav()">
+    <div class="absolute top-14 left-0 right-0 bg-surface border-b border-line px-4 py-3 flex flex-col gap-1" onclick="event.stopPropagation()">
+      ${NavItem('dashboard', Icon.dashboard, 'Dashboard')}
+      ${NavItem('form', Icon.add, 'Add Test')}
+      ${NavItem('history', Icon.history, 'Test History')}
+      <div class="mt-1 pt-1 border-t border-line">
+        <button onclick="window.location.href='/index.html'" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm text-muted hover:text-fg hover:bg-surface2 transition-colors">
+          <span>${Icon.back}</span>
+          <span class="font-medium">Back</span>
+        </button>
+      </div>
+    </div>
+  </div>` : ''}
+  `;
+}
+
+/* ============================================================
+   SHARED UI PIECES
+   ============================================================ */
+function MetricCard(label, value, sub, tone) {
+  const t = TONE[tone || 'muted'];
+  return `<div class="rounded-xl border border-line bg-surface p-4">
+    <div class="text-[11px] text-muted mb-1.5">${label}</div>
+    <div class="text-2xl font-semibold tabular ${t.text}">${value}</div>
+    ${sub ? `<div class="text-[11px] text-faint mt-1">${sub}</div>` : ''}
+  </div>`;
+}
+
+function ProgressBar(pct, tone) {
+  const t = TONE[tone || 'okay'];
+  const w = clamp(pct, 0, 100);
+  return `<div class="w-full h-1.5 rounded-full bg-white/5 overflow-hidden"><div class="h-full ${t.bar} rounded-full" style="width:${w}%"></div></div>`;
+}
+
+function RangeFilter() {
+  const opts = ['last1', 'last3', 'last5', 'last7', 'last10', 'last20', 'all', 'custom'];
+  return `
+  <div class="flex flex-wrap items-center gap-2">
+    <select onchange="App.setRange(this.value)" class="bg-surface border border-line text-sm rounded-lg px-3 py-2 text-fg">
+      ${opts.map(o => `<option value="${o}" ${state.range === o ? 'selected' : ''}>${RANGE_LABEL[o]}</option>`).join('')}
+    </select>
+    ${state.range === 'custom' ? `
+      <input type="date" value="${state.customStart}" onchange="App.setCustomRange(this.value, null)" class="bg-surface border border-line text-sm rounded-lg px-2.5 py-2 text-fg" />
+      <span class="text-faint text-sm">to</span>
+      <input type="date" value="${state.customEnd}" onchange="App.setCustomRange(null, this.value)" class="bg-surface border border-line text-sm rounded-lg px-2.5 py-2 text-fg" />
+    ` : ''}
+  </div>`;
+}
+
+function SectionTitle(title, desc) {
+  return `<div class="mb-3">
+    <h2 class="font-serif text-lg text-fg">${title}</h2>
+    ${desc ? `<p class="text-[12.5px] text-muted mt-0.5">${desc}</p>` : ''}
+  </div>`;
+}
+
+function EmptyState(ctaView, message, cta) {
+  return `<div class="rounded-2xl border border-dashed border-line2 bg-surface/50 p-10 text-center max-w-md mx-auto mt-10">
+    <div class="w-12 h-12 rounded-full bg-gold/10 border border-gold/30 flex items-center justify-center mx-auto mb-4 text-gold">${Icon.add}</div>
+    <h3 class="font-serif text-lg text-fg mb-1.5">No test data yet</h3>
+    <p class="text-sm text-muted mb-5 leading-relaxed">${message}</p>
+    <button onclick="App.setView('${ctaView}')" class="bg-gold text-base font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-gold/90 transition-colors">${cta}</button>
+  </div>`;
+}
+
+/* ============================================================
+   DASHBOARD VIEW
+   ============================================================ */
+function DashboardView() {
+  if (!state.tests.length) {
+    return `<div class="p-5 md:p-8">
+      ${SectionTitle('Dashboard', 'Your JEE performance command center.')}
+      ${EmptyState('form', 'Add your mock test results and start tracking performance, accuracy, consistency and improvement over time.', 'Add Your First Test')}
+    </div>`;
+  }
+
+  const filtered = filterByRange(state.tests, state.range, state.customStart, state.customEnd);
+  if (!filtered.length) {
+    return `<div class="p-5 md:p-8">
+      ${SectionTitle('Dashboard')}
+      <div class="mb-6">${RangeFilter()}</div>
+      <div class="text-muted text-sm rounded-xl border border-line bg-surface p-6 text-center">No tests fall inside this range. Try a wider range.</div>
+    </div>`;
+  }
+
+  const agg = buildAggregate(filtered);
+  const trend = improvementTrend(agg.computed);
+  const insights = generateInsights(agg);
+  const executiveConclusion = generateExecutiveConclusion(agg, insights);
+  const latestComputed = agg.computed[agg.computed.length - 1].c;
+  const opportunities = improvementOpportunities(latestComputed);
+  const ranking = rankSubjects(agg);
+  const consistency = Calc.consistencyLabel(agg.cv);
+
+  // Next Test Game Plan
+  const nextTestPriority = computeNextTestPriority(agg);
+  const attemptStrategy = computeAttemptStrategyScore(agg);
+  const prediction = predictNextTestScore(agg);
+
+  // Study-log crossover (reads studyos:studySessions independently)
+  const studySessions = StudyLogStore.load();
+  const prepLink = buildPrepPerformanceLink(state.tests, studySessions, 3);
+  const rhythm = buildTestingRhythm(state.tests);
+
+  return `<div class="p-5 md:p-8 max-w-[1400px]">
+    <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
+      <div>
+        <h1 class="font-serif text-2xl text-fg">Dashboard</h1>
+        <p class="text-[12.5px] text-muted mt-1">Showing analytics for <span class="text-fg">${RANGE_LABEL[state.range]}</span> · ${agg.n} test${agg.n === 1 ? '' : 's'}</p>
+      </div>
+      ${RangeFilter()}
+    </div>
+
+    <!-- Key metrics -->
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
+      ${MetricCard('Total Tests', agg.n, null, 'muted')}
+      ${MetricCard('Average Score', fmtInt(agg.avgTotal), '/ 300', 'okay')}
+      ${MetricCard('Best Score', fmtInt(agg.best), '/ 300', 'good')}
+      ${MetricCard('Latest Score', fmtInt(agg.latest), '/ 300', Calc.perfTone(safeDiv(agg.latest, 300) * 100))}
+      ${MetricCard('Avg Accuracy', fmt(agg.avgAcc, 1) + '%', null, Calc.perfTone(agg.avgAcc))}
+      ${MetricCard('Avg Attempt Rate', fmt(agg.avgAttempt, 1) + '%', null, 'okay')}
+    </div>
+
+    <!-- Score trend -->
+    <div class="rounded-xl border border-line bg-surface p-4 md:p-5 mb-6">
+      ${SectionTitle('Total Score Trend', 'Score progression across the selected range, with 3-test moving average.')}
+      <div class="chart-wrap"><canvas id="chartScoreTrend"></canvas></div>
+    </div>
+
+    <!-- Subject score trend + comparison -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+        ${SectionTitle('Subject Score Trend', 'Which subject is improving, declining or unstable.')}
+        <div class="chart-wrap"><canvas id="chartSubjectTrend"></canvas></div>
+      </div>
+      <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+        ${SectionTitle('Subject Comparison', 'Average score, accuracy and attempt rate by subject.')}
+        <div class="chart-wrap"><canvas id="chartSubjectCompare"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Subject cards -->
+    <div class="mb-6">
+      ${SectionTitle('Subject-wise Performance', 'Averages over the selected range.')}
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        ${SUBJECT_KEYS.map(k => SubjectDashCard(k, agg.perSubject[k])).join('')}
+      </div>
+    </div>
+
+    <!-- Accuracy + attempt trend -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+        ${SectionTitle('Accuracy Trend')}
+        <div class="chart-wrap"><canvas id="chartAccuracyTrend"></canvas></div>
+      </div>
+      <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+        ${SectionTitle('Attempt Trend', 'Questions attempted per subject, per test.')}
+        <div class="chart-wrap"><canvas id="chartAttemptTrend"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Distribution + negative marks -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+        ${SectionTitle('Correct / Incorrect / Skipped', 'Distribution per test — marks alone do not tell the full story.')}
+        <div class="chart-wrap"><canvas id="chartDistribution"></canvas></div>
+      </div>
+      <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+        ${SectionTitle('Negative Marks Trend', 'Are you losing marks by over-attempting?')}
+        <div class="chart-wrap"><canvas id="chartNegative"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Advanced metrics -->
+    <div class="mb-6">
+      ${SectionTitle('Advanced Metrics')}
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        ${AdvancedCard('Consistency Score', consistency.label, isFinite(agg.cv) ? `Score variation (CV): ${fmt(agg.cv, 1)}%` : 'Need 2+ tests', consistency.tone)}
+        ${trend ? AdvancedCard('Improvement Trend', (trend.direction === 'improving' ? '↑ Improving' : trend.direction === 'declining' ? '↓ Declining' : '→ Stable'), `Last ${trend.count} avg ${fmtInt(trend.avgRecent)} vs prev ${fmtInt(trend.avgPrev)} (${trend.change >= 0 ? '+' : ''}${fmt(trend.change, 1)}%)`, trend.direction === 'improving' ? 'good' : trend.direction === 'declining' ? 'bad' : 'okay') : AdvancedCard('Improvement Trend', 'Not enough data', 'Add more tests to unlock this', 'muted')}
+        ${SUBJECT_KEYS.slice(0, 1).map(() => '').join('')}
+        ${AdvancedCard('Most Volatile Subject', SUBJECT_LABEL[[...SUBJECT_KEYS].sort((a, b) => agg.perSubject[b].std - agg.perSubject[a].std)[0]], `Range: ${fmtInt(Math.min(...SUBJECT_KEYS.map(k => agg.perSubject[k].min)))}–${fmtInt(Math.max(...SUBJECT_KEYS.map(k => agg.perSubject[k].max)))}`, 'warn')}
+        ${AdvancedCard('Most Reliable Subject', SUBJECT_LABEL[ranking[0].key], `Weighted score ${fmt(ranking[0].weighted, 0)}/100`, 'good')}
+      </div>
+    </div>
+
+    <!-- Subject momentum + matrix -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+        ${SectionTitle('Subject Momentum')}
+        <div class="flex flex-col gap-3">
+          ${SUBJECT_KEYS.map(k => {
+            const p = agg.perSubject[k]; const m = Calc.momentumLabel(p.slopePct); const t = TONE[m.tone];
+            return `<div class="flex items-center justify-between border border-line rounded-lg px-3.5 py-2.5">
+              <div class="flex items-center gap-2.5">
+                <span class="w-2 h-2 rounded-full" style="background:${SUBJECT_COLOR[k]}"></span>
+                <span class="text-sm text-fg">${SUBJECT_LABEL[k]}</span>
+              </div>
+              <span class="text-xs font-medium px-2 py-1 rounded-md ${t.bg} ${t.text} border ${t.border}">${m.label}</span>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+      <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+        ${SectionTitle('Accuracy vs Attempt Matrix')}
+        <div class="flex flex-col gap-3">
+          ${SUBJECT_KEYS.map(k => {
+            const p = agg.perSubject[k]; const q = accuracyAttemptQuadrant(p.avgAccuracy, p.avgAttempt); const t = TONE[q.tone];
+            return `<div class="border border-line rounded-lg px-3.5 py-2.5">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-sm text-fg">${SUBJECT_LABEL[k]}</span>
+                <span class="text-xs font-medium px-2 py-0.5 rounded-md ${t.bg} ${t.text} border ${t.border}">${q.label}</span>
+              </div>
+              <div class="text-[11px] text-faint">Accuracy ${fmt(p.avgAccuracy, 0)}% · Attempt ${fmt(p.avgAttempt, 0)}% — ${q.note}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+
+    <!-- Insights -->
+    <div class="rounded-xl border border-gold/25 bg-gradient-to-b from-gold/[0.06] to-transparent p-4 md:p-5 mb-6">
+      ${SectionTitle('AI Performance Intelligence', `Advanced statistical prioritisation · ${insights.confidence || 50}% data confidence · showing only the highest-signal insights`)}
+      <div class="flex flex-col gap-3">
+        ${insights.map((i, idx) => `<div class="rounded-lg border border-gold/10 bg-black/10 px-3.5 py-3">
+          <div class="flex items-start gap-3 text-sm text-fg/90 leading-relaxed">
+            <span class="text-gold font-semibold tabular mt-0.5">${String(idx + 1).padStart(2, '0')}</span>
+            <div class="flex-1">
+              <div>${i.text}</div>
+              ${i.action ? `<div class="mt-1.5 text-[12px] text-good"><span class="font-medium">Best move:</span> ${i.action}</div>` : ''}
+            </div>
+          </div>
+        </div>`).join('')}
+      </div>
+      ${executiveConclusion ? `<div class="mt-5 pt-4 border-t border-gold/20">
+        <div class="text-[10px] uppercase tracking-[0.16em] text-gold/80 mb-2">AI Executive Conclusion</div>
+        <p class="text-sm md:text-[15px] leading-7 text-fg/90">${executiveConclusion}</p>
+      </div>` : ''}
+    </div>
+
+    <!-- Next Test Game Plan -->
+    <div class="rounded-xl border border-line bg-surface p-4 md:p-5 mb-6">
+      ${SectionTitle('Next Test Game Plan', 'Per-subject priority, an attempt-strategy score, and a one-step-ahead prediction — all from your own history.')}
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+        ${nextTestPriority.map(p => { const t = TONE[p.tone]; return `
+        <div class="rounded-lg border ${t.border} bg-black/10 p-3.5">
+          <div class="flex items-center justify-between gap-2 mb-1.5">
+            <span class="text-sm text-fg font-medium">${SUBJECT_LABEL[p.key]}</span>
+            <span class="text-[10.5px] font-semibold px-2 py-0.5 rounded-full ${t.bg} ${t.text} border ${t.border} text-right">${p.action}</span>
+          </div>
+          <div class="text-[12px] text-muted leading-relaxed">${p.detail}</div>
+        </div>`; }).join('')}
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="rounded-lg border border-line bg-black/10 p-4">
+          <div class="text-[11px] text-muted mb-1.5">Attempt Strategy Score</div>
+          <div class="flex items-end gap-2 mb-2">
+            <span class="text-3xl font-semibold tabular ${TONE[attemptStrategy.tone].text}">${attemptStrategy.score}</span>
+            <span class="text-sm text-faint mb-1">/ 100</span>
+          </div>
+          ${ProgressBar(attemptStrategy.score, attemptStrategy.tone)}
+          <div class="mt-2.5 text-xs font-semibold ${TONE[attemptStrategy.tone].text}">${attemptStrategy.classification}</div>
+          <div class="mt-1.5 text-[12px] text-muted leading-relaxed">${attemptStrategy.strategyForNext}</div>
+        </div>
+        <div class="rounded-lg border border-line bg-black/10 p-4">
+          <div class="text-[11px] text-muted mb-1.5">Predicted Next Score</div>
+          <div class="text-3xl font-semibold tabular text-fg mb-1">${prediction.predicted}<span class="text-sm text-faint font-normal"> / ${fmtInt(prediction.maxMarks)}</span></div>
+          <div class="text-[11px] text-faint mb-2.5">Likely range ${prediction.low}–${prediction.high} · ${prediction.confidencePct}% confidence</div>
+          <div class="text-[12px] text-muted leading-relaxed">Jitni zyada consistency aur kam volatility hogi, ye prediction utna hi tight aur reliable ho jayega.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Study-log crossover -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+        ${SectionTitle('Prep-to-Performance Link', 'studyos:studySessions se pull kiya gaya study-log data, test scores ke saath cross-checked.')}
+        <p class="text-sm text-fg/90 leading-relaxed">${prepLink.text}</p>
+      </div>
+      <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+        ${SectionTitle('Testing Rhythm', 'Kitni regularly mock tests ho rahe hain.')}
+        <p class="text-sm text-fg/90 leading-relaxed">${rhythm.text}</p>
+      </div>
+    </div>
+
+    <!-- Improvement opportunities + ranking -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+        ${SectionTitle('Where Are Your Next Marks?', `Estimated potential, based on your most recent test (${escapeHtml(agg.computed[agg.computed.length-1].test.name)}).`)}
+        <div class="flex flex-col gap-2">
+          ${opportunities.length ? opportunities.map((o, idx) => `<div class="flex items-center justify-between border border-line rounded-lg px-3.5 py-2.5">
+            <span class="text-sm text-fg">${idx + 1}. ${o.text}</span>
+            <span class="text-sm font-semibold text-good tabular">+${fmt(o.gain, 1)} <span class="text-[10px] text-faint font-normal">est.</span></span>
+          </div>`).join('') : `<div class="text-sm text-muted">No clear low-hanging opportunities detected — performance is well balanced.</div>`}
+        </div>
+      </div>
+      <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+        ${SectionTitle('Subject Ranking', 'Weighted: 40% efficiency · 30% accuracy · 20% consistency · 10% trend')}
+        <div class="flex flex-col gap-2.5">
+          ${ranking.map((r, idx) => `<div class="flex items-center justify-between border border-line rounded-lg px-3.5 py-2.5">
+            <div class="flex items-center gap-3">
+              <span class="font-serif text-sm text-faint">#${idx + 1}</span>
+              <span class="text-sm text-fg">${SUBJECT_LABEL[r.key]}</span>
+              <span class="text-[11px] text-faint">${idx === 0 ? 'Strongest' : idx === ranking.length - 1 ? 'Needs Most Attention' : 'Middle'}</span>
+            </div>
+            <span class="text-sm font-semibold tabular text-fg">${fmt(r.weighted, 0)}</span>
+          </div>`).join('')}
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent tests -->
+    <div class="rounded-xl border border-line bg-surface p-4 md:p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-serif text-lg text-fg">Recent Tests</h2>
+        <button onclick="App.setView('history')" class="text-xs text-gold hover:underline">View all →</button>
+      </div>
+      <div class="flex flex-col divide-y divide-line">
+        ${getSortedTests(state.tests).slice(-5).reverse().map(t => RecentTestRow(t)).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
+function SubjectDashCard(key, p) {
+  const tone = Calc.perfTone(p.avgNetEff);
+  const t = TONE[tone];
+  return `<div class="rounded-xl border ${t.border} bg-surface p-4">
+    <div class="flex items-center justify-between mb-3">
+      <span class="font-serif text-[15px] text-fg">${SUBJECT_LABEL[key]}</span>
+      <span class="text-[10px] font-medium px-2 py-0.5 rounded-full ${t.bg} ${t.text} border ${t.border}">${tone === 'good' ? 'Excellent' : tone === 'okay' ? 'Good' : tone === 'warn' ? 'Needs Attention' : 'Weak'}</span>
+    </div>
+    <div class="text-2xl font-semibold tabular text-fg mb-3">${fmtInt(p.avgScore)}<span class="text-xs text-faint font-normal"> avg marks</span></div>
+    <div class="grid grid-cols-2 gap-x-3 gap-y-2 text-[11px] text-muted mb-3">
+      <div>Accuracy <span class="text-fg tabular float-right">${fmt(p.avgAccuracy, 0)}%</span></div>
+      <div>Attempt <span class="text-fg tabular float-right">${fmt(p.avgAttempt, 0)}%</span></div>
+      <div>Neg. Lost <span class="text-bad tabular float-right">${fmt(p.avgNeg, 1)}</span></div>
+      <div>Consistency <span class="text-fg tabular float-right">${isFinite(p.cv) ? fmt(100 - clamp(p.cv, 0, 100), 0) : '—'}</span></div>
+    </div>
+    ${ProgressBar(p.avgNetEff, tone)}
+  </div>`;
+}
+
+function AdvancedCard(label, value, sub, tone) {
+  const t = TONE[tone || 'muted'];
+  return `<div class="rounded-xl border ${t.border} bg-surface p-4">
+    <div class="text-[11px] text-muted mb-1.5">${label}</div>
+    <div class="text-base font-semibold ${t.text} mb-1">${value}</div>
+    <div class="text-[11px] text-faint">${sub}</div>
+  </div>`;
+}
+
+function RecentTestRow(t) {
+  const c = Calc.test(t);
+  return `<div class="flex items-center justify-between py-3 gap-3 flex-wrap">
+    <div class="min-w-[160px]">
+      <div class="text-sm text-fg font-medium">${escapeHtml(t.name)}</div>
+      <div class="text-[11px] text-faint">${formatDate(t.date)} · ${t.type}</div>
+    </div>
+    <div class="text-sm tabular text-fg">${fmtInt(c.overall.totalMarks)}<span class="text-faint text-xs">/${fmtInt(c.overall.maxMarks)}</span></div>
+    <div class="text-[11px] text-muted tabular">Acc ${fmt(c.overall.accuracy,0)}%</div>
+    <button onclick="App.viewTest('${t.id}')" class="text-xs text-gold hover:underline">View →</button>
+  </div>`;
+}
+
+/* ============================================================
+   ADD/EDIT TEST FORM
+   ============================================================ */
+function subjectFormBlock(key, s) {
+  const label = SUBJECT_LABEL[key];
+  return `<div class="rounded-xl border border-line bg-surface2 p-4" data-subject="${key}">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="font-serif text-[15px] text-fg">${label}</h3>
+      <button type="button" onclick="App.toggleAdvanced('${key}')" class="text-[11px] text-gold hover:underline">${state.advancedOpen && state.advancedOpen[key] ? 'Hide advanced' : 'Advanced settings'}</button>
+    </div>
+    <div class="grid grid-cols-2 gap-3 mb-1">
+      <label class="block">
+        <span class="text-[11px] text-muted">Correct</span>
+        <input type="number" min="0" step="1" name="${key}_correct" value="${s.correct}" oninput="App.livePreview()" class="mt-1 w-full bg-surface border border-line rounded-lg px-3 py-2 text-sm text-fg tabular" />
+      </label>
+      <label class="block">
+        <span class="text-[11px] text-muted">Incorrect</span>
+        <input type="number" min="0" step="1" name="${key}_incorrect" value="${s.incorrect}" oninput="App.livePreview()" class="mt-1 w-full bg-surface border border-line rounded-lg px-3 py-2 text-sm text-fg tabular" />
+      </label>
+    </div>
+    <div id="advanced_${key}" class="grid grid-cols-3 gap-3 mt-3 ${state.advancedOpen && state.advancedOpen[key] ? '' : 'hidden'}">
+      <label class="block">
+        <span class="text-[11px] text-muted">Total Qs</span>
+        <input type="number" min="1" step="1" name="${key}_total" value="${s.totalQuestions}" oninput="App.livePreview()" class="mt-1 w-full bg-surface border border-line rounded-lg px-3 py-2 text-sm text-fg tabular" />
+      </label>
+      <label class="block">
+        <span class="text-[11px] text-muted">Mark / Correct</span>
+        <input type="number" step="0.5" name="${key}_mc" value="${s.markPerCorrect}" oninput="App.livePreview()" class="mt-1 w-full bg-surface border border-line rounded-lg px-3 py-2 text-sm text-fg tabular" />
+      </label>
+      <label class="block">
+        <span class="text-[11px] text-muted">Neg. / Incorrect</span>
+        <input type="number" step="0.25" name="${key}_mi" value="${s.markPerIncorrect}" oninput="App.livePreview()" class="mt-1 w-full bg-surface border border-line rounded-lg px-3 py-2 text-sm text-fg tabular" />
+      </label>
+    </div>
+    <div id="preview_${key}" class="mt-3 pt-3 border-t border-line text-[11px] text-muted flex flex-wrap gap-x-4 gap-y-1"></div>
+    <div id="error_${key}" class="text-[11px] text-bad mt-1.5"></div>
+  </div>`;
+}
+
+function FormView() {
+  const editing = state.editingId ? state.tests.find(t => t.id === state.editingId) : null;
+  const draft = editing || { name: '', date: todayISO(), type: 'JEE Main', physics: DEFAULT_SUBJECT(), chemistry: DEFAULT_SUBJECT(), mathematics: DEFAULT_SUBJECT() };
+
+  return `<div class="p-5 md:p-8 max-w-3xl">
+    ${SectionTitle(editing ? 'Edit Test' : 'Add New Test', 'Enter correct and incorrect counts — skipped questions and every metric are calculated automatically.')}
+
+    <form id="testForm" onsubmit="return App.submitForm(event)" class="flex flex-col gap-5">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <label class="block md:col-span-2">
+          <span class="text-[11px] text-muted">Test Name</span>
+          <input required type="text" name="name" value="${escapeHtml(draft.name)}" placeholder="e.g. FIITJEE AITS Part Test 4" class="mt-1 w-full bg-surface border border-line rounded-lg px-3 py-2.5 text-sm text-fg" />
+        </label>
+        <label class="block">
+          <span class="text-[11px] text-muted">Test Date</span>
+          <input required type="date" name="date" value="${draft.date}" class="mt-1 w-full bg-surface border border-line rounded-lg px-3 py-2.5 text-sm text-fg" />
+        </label>
+      </div>
+      <label class="block max-w-xs">
+        <span class="text-[11px] text-muted">Test Type</span>
+        <select name="type" class="mt-1 w-full bg-surface border border-line rounded-lg px-3 py-2.5 text-sm text-fg">
+          ${['JEE Main', 'JEE Advanced', 'Custom'].map(o => `<option ${draft.type === o ? 'selected' : ''}>${o}</option>`).join('')}
+        </select>
+      </label>
+
+      <div id="formErrorBanner" class="hidden text-sm text-bad bg-bad/10 border border-bad/30 rounded-lg px-3.5 py-2.5"></div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        ${SUBJECT_KEYS.map(k => subjectFormBlock(k, draft[k])).join('')}
+      </div>
+
+      <div id="livePreviewTotal" class="rounded-xl border border-gold/25 bg-gold/5 p-4 flex flex-wrap gap-x-8 gap-y-2 text-sm"></div>
+
+      <div class="flex items-center gap-3">
+        <button type="submit" class="bg-gold text-base font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-gold/90 transition-colors">${editing ? 'Save Changes' : 'Save Test'}</button>
+        <button type="button" onclick="App.cancelForm()" class="text-sm text-muted hover:text-fg px-4 py-2.5">Cancel</button>
+      </div>
+    </form>
+  </div>`;
+}
+
+/* ============================================================
+   HISTORY VIEW
+   ============================================================ */
+function HistoryView() {
+  if (!state.tests.length) {
+    return `<div class="p-5 md:p-8">
+      ${SectionTitle('Test History')}
+      ${EmptyState('form', 'Once you add mock tests, they will appear here with full details, edit, duplicate and delete options.', 'Add Your First Test')}
+    </div>`;
+  }
+  const q = state.search.trim().toLowerCase();
+  const list = getSortedTests(state.tests).reverse().filter(t => !q || t.name.toLowerCase().includes(q));
+
+  return `<div class="p-5 md:p-8 max-w-[1200px]">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+      <h1 class="font-serif text-2xl text-fg">Test History</h1>
+      <div class="relative">
+        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-faint">${Icon.search}</span>
+        <input type="text" value="${escapeHtml(state.search)}" oninput="App.setSearch(this.value)" placeholder="Search test name…" class="bg-surface border border-line rounded-lg pl-9 pr-3 py-2 text-sm text-fg w-64" />
+      </div>
+    </div>
+
+    ${list.length ? `<div class="flex flex-col gap-3">${list.map(t => HistoryRow(t)).join('')}</div>` : `<div class="text-sm text-muted rounded-xl border border-line bg-surface p-6 text-center">No tests match "${escapeHtml(state.search)}".</div>`}
+  </div>`;
+}
+
+function HistoryRow(t) {
+  const c = Calc.test(t);
+  return `<div class="rounded-xl border border-line bg-surface p-4 flex flex-wrap items-center gap-4">
+    <div class="min-w-[180px] flex-1">
+      <div class="text-sm font-medium text-fg">${escapeHtml(t.name)}</div>
+      <div class="text-[11px] text-faint mt-0.5">${formatDate(t.date)} · ${t.type}</div>
+    </div>
+    <div class="flex gap-5 text-[12px] tabular text-muted">
+      <div class="text-center"><div class="text-fg font-semibold">${fmtInt(c.overall.totalMarks)}</div><div class="text-faint text-[10px]">Total</div></div>
+      <div class="text-center"><div style="color:${SUBJECT_COLOR.physics}" class="font-semibold">${fmtInt(c.subjects.physics.marks)}</div><div class="text-faint text-[10px]">Phy</div></div>
+      <div class="text-center"><div style="color:${SUBJECT_COLOR.chemistry}" class="font-semibold">${fmtInt(c.subjects.chemistry.marks)}</div><div class="text-faint text-[10px]">Chem</div></div>
+      <div class="text-center"><div style="color:${SUBJECT_COLOR.mathematics}" class="font-semibold">${fmtInt(c.subjects.mathematics.marks)}</div><div class="text-faint text-[10px]">Maths</div></div>
+      <div class="text-center"><div class="text-fg font-semibold">${fmt(c.overall.accuracy, 0)}%</div><div class="text-faint text-[10px]">Accuracy</div></div>
+      <div class="text-center"><div class="text-fg font-semibold">${fmt(c.overall.attemptRate, 0)}%</div><div class="text-faint text-[10px]">Attempt</div></div>
+    </div>
+    <div class="flex gap-2 ml-auto">
+      <button onclick="App.viewTest('${t.id}')" class="text-xs px-2.5 py-1.5 rounded-md border border-line text-fg hover:bg-surface2">View</button>
+      <button onclick="App.editTest('${t.id}')" class="text-xs px-2.5 py-1.5 rounded-md border border-line text-fg hover:bg-surface2">Edit</button>
+      <button onclick="App.duplicateTest('${t.id}')" class="text-xs px-2.5 py-1.5 rounded-md border border-line text-fg hover:bg-surface2">Duplicate</button>
+      <button onclick="App.deleteTest('${t.id}')" class="text-xs px-2.5 py-1.5 rounded-md border border-bad/30 text-bad hover:bg-bad/10">Delete</button>
+    </div>
+  </div>`;
+}
+
+/* ============================================================
+   TEST REPORT VIEW
+   ============================================================ */
+function ReportView() {
+  const test = state.tests.find(t => t.id === state.viewingId);
+  if (!test) return `<div class="p-8 text-muted">Test not found. <button onclick="App.setView('history')" class="text-gold hover:underline">Back to history</button></div>`;
+  const r = buildTestReport(test, state.tests);
+  const rating = Calc.ratingLabel(r.rating);
+  const ratingTone = TONE[rating.tone];
+
+  return `<div class="p-5 md:p-8 max-w-4xl">
+    <button onclick="App.setView('history')" class="flex items-center gap-1.5 text-xs text-muted hover:text-fg mb-4">${Icon.back} Back to history</button>
+
+    <div class="flex flex-wrap items-start justify-between gap-4 mb-6">
+      <div>
+        <h1 class="font-serif text-2xl text-fg">${escapeHtml(test.name)}</h1>
+        <p class="text-[12.5px] text-muted mt-1">${formatDate(test.date)} · ${test.type}</p>
+      </div>
+      <div class="text-right">
+        <div class="text-3xl font-semibold tabular text-fg">${fmtInt(r.c.overall.totalMarks)}<span class="text-base text-faint font-normal"> / ${fmtInt(r.c.overall.maxMarks)}</span></div>
+        <span class="inline-block mt-1 text-xs font-medium px-2.5 py-1 rounded-md ${ratingTone.bg} ${ratingTone.text} border ${ratingTone.border}">${rating.label}</span>
+      </div>
+    </div>
+
+    <!-- A. Score summary -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+      ${MetricCard('Percentage', fmt(r.c.overall.percentage, 1) + '%', null, Calc.perfTone(r.c.overall.percentage))}
+      ${MetricCard('Accuracy', fmt(r.c.overall.accuracy, 1) + '%', null, Calc.perfTone(r.c.overall.accuracy))}
+      ${MetricCard('Attempt Rate', fmt(r.c.overall.attemptRate, 1) + '%', null, 'okay')}
+      ${MetricCard('Negative Lost', '-' + fmt(r.c.overall.negLost, 1), null, 'bad')}
+    </div>
+
+    <!-- B. Subject comparison -->
+    <div class="rounded-xl border border-line bg-surface p-4 md:p-5 mb-6">
+      ${SectionTitle('Subject Comparison')}
+      <div class="chart-wrap-sm"><canvas id="chartReportSubjects"></canvas></div>
+    </div>
+
+    <!-- Subject detail table -->
+    <div class="rounded-xl border border-line bg-surface p-4 md:p-5 mb-6 overflow-x-auto">
+      ${SectionTitle('Subject Breakdown')}
+      <table class="w-full text-sm min-w-[560px]">
+        <thead><tr class="text-left text-[11px] text-muted border-b border-line">
+          <th class="py-2 pr-3 font-medium">Subject</th><th class="py-2 pr-3 font-medium">Score</th><th class="py-2 pr-3 font-medium">Correct</th><th class="py-2 pr-3 font-medium">Incorrect</th><th class="py-2 pr-3 font-medium">Skipped</th><th class="py-2 pr-3 font-medium">Accuracy</th><th class="py-2 pr-3 font-medium">Attempt %</th>
+        </tr></thead>
+        <tbody class="tabular">
+          ${SUBJECT_KEYS.map(k => { const s = r.c.subjects[k]; return `<tr class="border-b border-line/60">
+            <td class="py-2 pr-3 text-fg flex items-center gap-2"><span class="w-2 h-2 rounded-full inline-block" style="background:${SUBJECT_COLOR[k]}"></span>${SUBJECT_LABEL[k]}</td>
+            <td class="py-2 pr-3 text-fg">${fmtInt(s.marks)}</td>
+            <td class="py-2 pr-3 text-good">${s.correct}</td>
+            <td class="py-2 pr-3 text-bad">${s.incorrect}</td>
+            <td class="py-2 pr-3 text-muted">${s.skipped}</td>
+            <td class="py-2 pr-3 text-fg">${fmt(s.accuracy, 1)}%</td>
+            <td class="py-2 pr-3 text-fg">${fmt(s.attemptPct, 1)}%</td>
+          </tr>`; }).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- C/D/E analysis -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+      <div class="rounded-xl border border-line bg-surface p-4">
+        <div class="text-[11px] text-muted mb-1">Accuracy Analysis</div>
+        <div class="text-sm text-fg leading-relaxed">Overall accuracy stands at ${fmt(r.c.overall.accuracy,1)}%. ${SUBJECT_LABEL[r.strongest.key]} led at ${fmt(r.strongest.accuracy,1)}%, while ${SUBJECT_LABEL[r.weakest.key]} trailed at ${fmt(r.weakest.accuracy,1)}%.</div>
+      </div>
+      <div class="rounded-xl border border-line bg-surface p-4">
+        <div class="text-[11px] text-muted mb-1">Attempt Analysis</div>
+        <div class="text-sm text-fg leading-relaxed">${fmtInt(r.c.overall.totalAttempted)} of ${fmtInt(r.c.overall.totalQuestions)} questions attempted (${fmt(r.c.overall.attemptRate,1)}%), leaving ${fmtInt(r.c.overall.totalSkipped)} unattempted.</div>
+      </div>
+      <div class="rounded-xl border border-line bg-surface p-4">
+        <div class="text-[11px] text-muted mb-1">Negative Marking Analysis</div>
+        <div class="text-sm text-fg leading-relaxed">${fmtInt(r.c.overall.totalIncorrect)} incorrect answers cost ${fmt(r.c.overall.negLost,1)} marks — ${fmt(safeDiv(r.c.overall.negLost, r.c.overall.maxMarks)*100,1)}% of the maximum possible score.</div>
+      </div>
+    </div>
+
+    <!-- F-J verdicts -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+      <div class="rounded-xl border ${TONE.good.border} bg-surface p-4">
+        <div class="text-[11px] text-muted mb-1">Strongest Subject</div>
+        <div class="text-sm text-fg leading-relaxed"><span class="font-medium">${SUBJECT_LABEL[r.strongest.key]}</span> — ${r.bestMetric}.</div>
+      </div>
+      <div class="rounded-xl border ${TONE.bad.border} bg-surface p-4">
+        <div class="text-[11px] text-muted mb-1">Weakest Subject</div>
+        <div class="text-sm text-fg leading-relaxed"><span class="font-medium">${SUBJECT_LABEL[r.weakest.key]}</span> — net efficiency ${fmt(r.weakest.netEfficiency,0)}%, accuracy ${fmt(r.weakest.accuracy,0)}%.</div>
+      </div>
+    </div>
+
+    <div class="rounded-xl border border-warn/30 bg-warn/5 p-4 mb-6">
+      <div class="text-[11px] text-muted mb-1">Biggest Problem</div>
+      <div class="text-sm text-fg leading-relaxed">${r.biggestProblem}</div>
+    </div>
+
+    <div class="rounded-xl border border-gold/25 bg-gold/5 p-4 mb-6">
+      <div class="text-[11px] text-muted mb-1">Mentor Verdict</div>
+      <div class="text-sm text-fg leading-relaxed">${r.verdict}</div>
+    </div>
+
+    <!-- Opportunities -->
+    <div class="rounded-xl border border-line bg-surface p-4 md:p-5 mb-6">
+      ${SectionTitle('Where Are Your Next Marks?', 'Estimated potential gains from this attempt.')}
+      <div class="flex flex-col gap-2">
+        ${r.opportunities.length ? r.opportunities.map((o, idx) => `<div class="flex items-center justify-between border border-line rounded-lg px-3.5 py-2.5">
+          <span class="text-sm text-fg">${idx + 1}. ${o.text}</span>
+          <span class="text-sm font-semibold text-good tabular">+${fmt(o.gain, 1)} <span class="text-[10px] text-faint font-normal">est.</span></span>
+        </div>`).join('') : `<div class="text-sm text-muted">No clear opportunities detected — performance was balanced.</div>`}
+      </div>
+    </div>
+
+    <p class="text-[11px] text-faint leading-relaxed">Performance rating is based on internal metrics (score efficiency, accuracy, attempt rate, negative marking, consistency and recent trend) and is not a substitute for percentile or rank.</p>
+
+    <div class="flex gap-3 mt-6">
+      <button onclick="App.editTest('${test.id}')" class="text-sm px-4 py-2 rounded-lg border border-line text-fg hover:bg-surface2">Edit This Test</button>
+      <button onclick="App.duplicateTest('${test.id}')" class="text-sm px-4 py-2 rounded-lg border border-line text-fg hover:bg-surface2">Duplicate</button>
+    </div>
+  </div>`;
+}
+
+/* ============================================================
+   CHART RENDERERS (called post-DOM-injection)
+   ============================================================ */
+function drawDashboardCharts(filtered) {
+  const agg = buildAggregate(filtered);
+  if (!agg) return;
+  const labels = agg.computed.map(x => x.test.name.length > 14 ? x.test.name.slice(0, 13) + '…' : x.test.name);
+  const totalScores = agg.computed.map(x => x.c.overall.totalMarks);
+
+  // moving average (window 3)
+  const movingAvg = totalScores.map((_, i, arr) => {
+    if (i < 2) return null;
+    return average(arr.slice(i - 2, i + 1));
+  });
+
+  makeChart('chartScoreTrend', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Total Score', data: totalScores, borderColor: '#c9a24b', backgroundColor: 'rgba(201,162,75,0.12)', tension: 0.3, fill: true, pointRadius: 3 },
+        ...(totalScores.length >= 3 ? [{ label: '3-Test Moving Avg', data: movingAvg, borderColor: '#5b8dc9', borderDash: [5, 4], pointRadius: 0, tension: 0.3 }] : [])
+      ]
+    },
+    options: baseLineOptions('Marks')
+  });
+
+  makeChart('chartSubjectTrend', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: SUBJECT_KEYS.map(k => ({
+        label: SUBJECT_LABEL[k], data: agg.computed.map(x => x.c.subjects[k].marks),
+        borderColor: SUBJECT_COLOR[k], backgroundColor: SUBJECT_COLOR[k] + '22', tension: 0.3, pointRadius: 2.5
+      }))
+    },
+    options: baseLineOptions('Marks')
+  });
+
+  makeChart('chartSubjectCompare', {
+    type: 'bar',
+    data: {
+      labels: SUBJECT_KEYS.map(k => SUBJECT_LABEL[k]),
+      datasets: [
+        { label: 'Avg Score', data: SUBJECT_KEYS.map(k => agg.perSubject[k].avgScore), backgroundColor: '#c9a24b' },
+        { label: 'Avg Accuracy %', data: SUBJECT_KEYS.map(k => agg.perSubject[k].avgAccuracy), backgroundColor: '#5b8dc9' },
+        { label: 'Avg Attempt %', data: SUBJECT_KEYS.map(k => agg.perSubject[k].avgAttempt), backgroundColor: '#4f9d74' },
+      ]
+    },
+    options: baseBarOptions()
+  });
+
+  makeChart('chartAccuracyTrend', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        ...SUBJECT_KEYS.map(k => ({ label: SUBJECT_LABEL[k], data: agg.computed.map(x => x.c.subjects[k].accuracy), borderColor: SUBJECT_COLOR[k], pointRadius: 2, tension: 0.3 })),
+        { label: 'Overall', data: agg.computed.map(x => x.c.overall.accuracy), borderColor: '#e8eaef', borderDash: [4, 3], pointRadius: 0, tension: 0.3 }
+      ]
+    },
+    options: baseLineOptions('Accuracy %', 100)
+  });
+
+  makeChart('chartAttemptTrend', {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: SUBJECT_KEYS.map(k => ({ label: SUBJECT_LABEL[k], data: agg.computed.map(x => x.c.subjects[k].attempted), backgroundColor: SUBJECT_COLOR[k] }))
+    },
+    options: baseBarOptions()
+  });
+
+  makeChart('chartDistribution', {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Correct', data: agg.computed.map(x => x.c.overall.totalCorrect), backgroundColor: '#4f9d74', stack: 's' },
+        { label: 'Incorrect', data: agg.computed.map(x => x.c.overall.totalIncorrect), backgroundColor: '#c1615a', stack: 's' },
+        { label: 'Skipped', data: agg.computed.map(x => x.c.overall.totalSkipped), backgroundColor: '#3a4356', stack: 's' },
+      ]
+    },
+    options: baseBarOptions(true)
+  });
+
+  makeChart('chartNegative', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Total Negative', data: agg.computed.map(x => x.c.overall.negLost), borderColor: '#c1615a', backgroundColor: 'rgba(193,97,90,0.12)', fill: true, tension: 0.3 },
+        ...SUBJECT_KEYS.map(k => ({ label: SUBJECT_LABEL[k], data: agg.computed.map(x => x.c.subjects[k].negLost), borderColor: SUBJECT_COLOR[k], borderDash: [3, 3], pointRadius: 1.5, tension: 0.3 }))
+      ]
+    },
+    options: baseLineOptions('Marks Lost')
+  });
+}
+
+function drawReportChart(test) {
+  const c = Calc.test(test);
+  makeChart('chartReportSubjects', {
+    type: 'bar',
+    data: {
+      labels: SUBJECT_KEYS.map(k => SUBJECT_LABEL[k]),
+      datasets: [
+        { label: 'Score', data: SUBJECT_KEYS.map(k => c.subjects[k].marks), backgroundColor: SUBJECT_KEYS.map(k => SUBJECT_COLOR[k]) },
+      ]
+    },
+    options: baseBarOptions()
+  });
+}
+
+function baseLineOptions(yTitle, max) {
+  return {
+    responsive: true, maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    animation: { duration: 250 },
+    plugins: { legend: { labels: { color: '#8b93a3', font: chartDefaults.font, boxWidth: 10 } }, tooltip: { backgroundColor: '#171c26', borderColor: '#242b38', borderWidth: 1, titleColor: '#e8eaef', bodyColor: '#c7ccd6' } },
+    scales: {
+      x: { grid: { color: chartDefaults.gridColor }, ticks: { color: chartDefaults.tickColor, font: chartDefaults.font } },
+      y: { max, grid: { color: chartDefaults.gridColor }, ticks: { color: chartDefaults.tickColor, font: chartDefaults.font }, title: yTitle ? { display: true, text: yTitle, color: '#8b93a3', font: chartDefaults.font } : undefined }
+    }
+  };
+}
+function baseBarOptions(stacked) {
+  return {
+    responsive: true, maintainAspectRatio: false,
+    animation: { duration: 250 },
+    plugins: { legend: { labels: { color: '#8b93a3', font: chartDefaults.font, boxWidth: 10 } }, tooltip: { backgroundColor: '#171c26', borderColor: '#242b38', borderWidth: 1, titleColor: '#e8eaef', bodyColor: '#c7ccd6' } },
+    scales: {
+      x: { stacked: !!stacked, grid: { color: chartDefaults.gridColor }, ticks: { color: chartDefaults.tickColor, font: chartDefaults.font } },
+      y: { stacked: !!stacked, grid: { color: chartDefaults.gridColor }, ticks: { color: chartDefaults.tickColor, font: chartDefaults.font } }
+    }
+  };
+}
+
+/* ============================================================
+   FORM LIVE PREVIEW
+   ============================================================ */
+function readFormSubject(fd, key) {
+  return {
+    totalQuestions: num(fd.get(key + '_total')) || 25,
+    correct: num(fd.get(key + '_correct')),
+    incorrect: num(fd.get(key + '_incorrect')),
+    markPerCorrect: fd.get(key + '_mc') !== null ? num(fd.get(key + '_mc')) : 4,
+    markPerIncorrect: fd.get(key + '_mi') !== null ? num(fd.get(key + '_mi')) : 1,
+  };
+}
+
+function livePreview() {
+  const form = document.getElementById('testForm');
+  if (!form) return;
+  const fd = new FormData(form);
+  let totalMarks = 0, totalMax = 0, valid = true;
+  const errors = [];
+
+  SUBJECT_KEYS.forEach(key => {
+    // fall back to default total/marks if advanced fields not rendered (hidden but present in DOM, so should exist)
+    const totalEl = form.querySelector(`[name="${key}_total"]`);
+    const mcEl = form.querySelector(`[name="${key}_mc"]`);
+    const miEl = form.querySelector(`[name="${key}_mi"]`);
+    const s = {
+      totalQuestions: totalEl ? num(totalEl.value) : 25,
+      correct: num(fd.get(key + '_correct')),
+      incorrect: num(fd.get(key + '_incorrect')),
+      markPerCorrect: mcEl ? num(mcEl.value) : 4,
+      markPerIncorrect: miEl ? num(miEl.value) : 1,
+    };
+    const c = Calc.subject(s);
+    totalMarks += c.marks; totalMax += c.maxMarks;
+
+    const errBox = document.getElementById('error_' + key);
+    let err = '';
+    if (s.correct < 0 || s.incorrect < 0) err = 'Values cannot be negative.';
+    else if (s.correct + s.incorrect > s.totalQuestions) err = `Correct + Incorrect (${s.correct + s.incorrect}) exceeds total questions (${s.totalQuestions}).`;
+    if (err) valid = false;
+    if (errBox) errBox.textContent = err;
+
+    const prev = document.getElementById('preview_' + key);
+    if (prev) prev.innerHTML = `<span>Skipped: <b class="text-fg">${c.skipped}</b></span><span>Marks: <b class="text-fg">${fmtInt(c.marks)}</b></span><span>Accuracy: <b class="text-fg">${fmt(c.accuracy,0)}%</b></span>`;
+  });
+
+  const totalBox = document.getElementById('livePreviewTotal');
+  if (totalBox) totalBox.innerHTML = `<span class="text-muted">Projected Total: <b class="text-fg tabular">${fmtInt(totalMarks)} / ${fmtInt(totalMax)}</b></span><span class="text-muted">Percentage: <b class="text-fg tabular">${fmt(safeDiv(totalMarks,totalMax)*100,1)}%</b></span>`;
+
+  const banner = document.getElementById('formErrorBanner');
+  if (banner) {
+    if (!valid) { banner.classList.remove('hidden'); banner.textContent = 'Please fix the highlighted errors below before saving.'; }
+    else banner.classList.add('hidden');
+  }
+  return valid;
+}
+
+/* ============================================================
+   APP CONTROLLER
+   ============================================================ */
+const App = {
+  setView(view) {
+    if (view !== 'form') state.editingId = null;
+    state.view = view;
+    state.mobileNavOpen = false;
+    render();
+  },
+  toggleMobileNav() { state.mobileNavOpen = !state.mobileNavOpen; render(); },
+  setRange(v) { state.range = v; render(); },
+  setCustomRange(start, end) {
+    if (start !== null) state.customStart = start;
+    if (end !== null) state.customEnd = end;
+    render();
+  },
+  setSearch(v) { state.search = v; renderPartialHistory(); },
+  toggleAdvanced(key) {
+    state.advancedOpen = state.advancedOpen || {};
+    state.advancedOpen[key] = !state.advancedOpen[key];
+    render();
+  },
+  livePreview() { livePreview(); },
+  viewTest(id) { state.viewingId = id; state.view = 'report'; render(); },
+  editTest(id) { state.editingId = id; state.advancedOpen = {}; state.view = 'form'; render(); },
+  cancelForm() { state.editingId = null; App.setView(state.tests.length ? 'dashboard' : 'dashboard'); },
+  deleteTest(id) {
+    const t = state.tests.find(x => x.id === id);
+    if (!t) return;
+    if (!confirm(`Delete "${t.name}"? This cannot be undone.`)) return;
+    state.tests = state.tests.filter(x => x.id !== id);
+    Store.save(state.tests);
+    render();
+  },
+  duplicateTest(id) {
+    const t = state.tests.find(x => x.id === id);
+    if (!t) return;
+    const copy = JSON.parse(JSON.stringify(t));
+    copy.id = uid();
+    copy.name = t.name + ' (Copy)';
+    copy.date = todayISO();
+    copy.createdAt = Date.now();
+    state.tests.push(copy);
+    Store.save(state.tests);
+    state.editingId = copy.id;
+    state.view = 'form';
+    render();
+  },
+  submitForm(e) {
+    e.preventDefault();
+    const valid = livePreview();
+    if (!valid) return false;
+    const form = e.target;
+    const fd = new FormData(form);
+    const name = (fd.get('name') || '').toString().trim();
+    const date = fd.get('date');
+    const type = fd.get('type');
+    if (!name || !date) { alert('Please provide a test name and date.'); return false; }
+
+    const testObj = { id: state.editingId || uid(), name, date, type, createdAt: state.editingId ? (state.tests.find(t=>t.id===state.editingId)?.createdAt || Date.now()) : Date.now() };
+    SUBJECT_KEYS.forEach(key => { testObj[key] = readFormSubject(fd, key); });
+
+    if (state.editingId) {
+      const idx = state.tests.findIndex(t => t.id === state.editingId);
+      state.tests[idx] = testObj;
+    } else {
+      state.tests.push(testObj);
+    }
+    Store.save(state.tests);
+    state.editingId = null;
+    state.view = 'dashboard';
+    render();
+    return false;
+  }
+};
+window.App = App;
+
+/* ============================================================
+   RENDER ROOT
+   ============================================================ */
+function renderPartialHistory() {
+  // lightweight re-render for search input to avoid losing focus
+  const root = document.getElementById('root');
+  const container = root.querySelector('#historyContainer');
+  if (container) container.outerHTML = `<div id="historyContainer">${HistoryView()}</div>`;
+}
+
+function render() {
+  const root = document.getElementById('root');
+  let mainHtml = '';
+  if (state.view === 'dashboard') mainHtml = DashboardView();
+  else if (state.view === 'form') mainHtml = FormView();
+  else if (state.view === 'history') mainHtml = `<div id="historyContainer">${HistoryView()}</div>`;
+  else if (state.view === 'report') mainHtml = ReportView();
+
+  root.innerHTML = `
+    ${Sidebar()}
+    <div class="flex-1 min-w-0">
+      ${MobileTopbar()}
+      <main class="fade-in">${mainHtml}</main>
+    </div>
+  `;
+
+  // Post-render side effects
+  if (state.view === 'dashboard' && state.tests.length) {
+    const filtered = filterByRange(state.tests, state.range, state.customStart, state.customEnd);
+    if (filtered.length) drawDashboardCharts(filtered);
+  }
+  if (state.view === 'report') {
+    const test = state.tests.find(t => t.id === state.viewingId);
+    if (test) drawReportChart(test);
+  }
+  if (state.view === 'form') {
+    setTimeout(livePreview, 0);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', render);
+</script>
+</body>
+</html>
