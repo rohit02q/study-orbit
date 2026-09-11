@@ -1,4 +1,4 @@
-const CACHE_NAME = 'study-orbit-v2';
+const CACHE_NAME = 'study-orbit-v1';
 
 // App shell — these are cached during installation.
 const CORE_ASSETS = [
