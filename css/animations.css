@@ -1,0 +1,38 @@
+/* One orchestrated motion per interaction — not hover effects on everything. */
+
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-overlay { animation: overlay-in var(--duration-standard) var(--ease-standard); }
+.modal-panel { animation: modal-in var(--duration-standard) var(--ease-standard); }
+.toast { animation: toast-in var(--duration-standard) var(--ease-standard); }
+
+.page-content { animation: overlay-in var(--duration-standard) var(--ease-standard); }
+
+/* Keyboard focus is always visible — never suppressed */
+:focus-visible {
+  outline: 2px solid var(--color-ember);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

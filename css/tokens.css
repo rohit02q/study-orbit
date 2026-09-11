@@ -1,0 +1,57 @@
+:root {
+  /* Color — base */
+  --color-ink: #0E1116;
+  --color-surface: #161A22;
+  --color-surface-raised: #1E2530;
+  --color-border: #262D3A;
+  --color-border-strong: #333B4A;
+
+  /* Color — text */
+  --color-text: #E7EAF0;
+  --color-text-muted: #8A94A6;
+  --color-text-faint: #5B6273;
+
+  /* Color — accents */
+  --color-ember: #F0A857;
+  --color-ember-dim: #7A5A34;
+  --color-signal: #63D2C4;
+  --color-signal-dim: #33544F;
+  --color-danger: #E8615F;
+  --color-danger-dim: #5A3231;
+  --color-warning: #D9C548;
+
+  /* Typography */
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* Radius — deliberately two scales, not one everywhere */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 18px;
+  --radius-pill: 999px;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Elevation — used sparingly, only on floating elements */
+  --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --shadow-soft: 0 2px 8px rgba(0, 0, 0, 0.25);
+
+  /* Layout */
+  --sidebar-width: 248px;
+  --sidebar-width-collapsed: 76px;
+  --topbar-height: 64px;
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-fast: 120ms;
+  --duration-standard: 220ms;
+}
