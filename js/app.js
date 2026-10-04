@@ -23,6 +23,7 @@ const NAV_ITEMS = [
   { path: 'tasks', label: 'Tasks', icon: 'check-square' },
   { path: 'notes', label: 'Notes', icon: 'notebook-pen' },
   { path: 'sleep', label: 'Sleep', icon: 'moon' },
+  { path: 'sleep2', label: 'Sleep Page 2', icon: 'moon', href: 'sleep.html' },
   { path: 'music', label: 'Music', icon: 'music' },
   { path: 'data', label: 'Data & Backup', icon: 'database' },
   { path: 'settings', label: 'Settings', icon: 'settings' },
