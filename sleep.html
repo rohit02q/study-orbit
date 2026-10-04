@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SleepSense – Sleep Analytics</title>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+body{background:#0a0f1f;color:#e5e9f5;font-family:Manrope,system-ui,sans-serif}
+.card{background:#111830;border:1px solid #222c4d;border-radius:.9rem;padding:1rem}
+.inp{width:100%;margin-top:.25rem;background:#0a0f1f;border:1px solid #2a3560;border-radius:.6rem;padding:.5rem .6rem;color:#e5e9f5;color-scheme:dark}
+.inp:focus,.btn:focus-visible{outline:2px solid #a5b4fc}
+.btn{background:#1b2547;padding:.4rem .8rem;border-radius:.6rem}
+.btn:hover{background:#26325f}
+.drop{border:1.5px dashed #3a4780;border-radius:.7rem;padding:1.1rem;text-align:center;cursor:pointer}
+.drop:hover,.drop.on{background:#18214a;border-color:#a5b4fc}
+</style>
+</head>
+<body>
+<div class="max-w-6xl mx-auto p-4 space-y-4">
+
+<header class="flex flex-wrap items-center justify-between gap-2">
+  <div>
+    <h1 class="text-2xl font-extrabold">SleepSense</h1>
+    <p class="text-sm text-slate-400">Track your sleep, measure consistency and get data-driven recommendations.</p>
+  </div>
+  <div class="flex gap-2 text-xs">
+    <button class="btn" onclick="exp('json')">Export JSON</button>
+    <button class="btn" onclick="exp('csv')">Export CSV</button>
+    <button class="btn text-red-400" onclick="clr()">Clear data</button>
+  </div>
+</header>
+
+<section class="grid md:grid-cols-2 gap-4">
+  <div class="card">
+    <h2 class="font-semibold mb-3">Log a sleep entry</h2>
+    <div class="grid grid-cols-2 gap-3">
+      <label class="text-xs text-slate-400">Wake-up date<input id="date" type="date" class="inp"></label>
+      <label class="text-xs text-slate-400">Sleep goal (hours)<input id="tgt" type="number" min="5" max="10" step="0.5" class="inp"></label>
+      <label class="text-xs text-slate-400">Bedtime<input id="bed" type="time" value="23:00" class="inp"></label>
+      <label class="text-xs text-slate-400">Wake-up time<input id="wake" type="time" value="07:00" class="inp"></label>
+      <button id="add" class="col-span-2 bg-indigo-500 hover:bg-indigo-400 text-slate-950 rounded-lg py-2 font-bold">Save entry</button>
+    </div>
+    <p id="msg" class="text-xs mt-2 text-slate-400"></p>
+  </div>
+  <div class="card">
+    <h2 class="font-semibold mb-3">Import data</h2>
+    <label id="drop" class="drop block">
+      <input id="file" type="file" accept=".csv,.json,.txt,text/csv,application/json" class="hidden">
+      <p class="text-sm font-semibold">Drop a CSV or JSON file here, or click to browse</p>
+      <p class="text-xs text-slate-400 mt-1">Entries are merged by date; an imported date replaces an existing entry.</p>
+    </label>
+    <p id="imsg" class="text-xs mt-2 text-slate-400"></p>
+    <div class="text-xs text-slate-500 mt-2 space-y-1">
+      <p><span class="text-slate-300">CSV:</span> columns <code>date,bedtime,wake</code> (header optional), e.g. <code>2026-10-04,23:15,06:45</code></p>
+      <p><span class="text-slate-300">JSON:</span> <code>[{"date":"2026-10-04","bed":"23:15","wake":"06:45"}]</code></p>
+      <p>Dates: YYYY-MM-DD or DD/MM/YYYY. Times: 24-hour or 12-hour (AM/PM). Date is the wake-up day.</p>
+    </div>
+  </div>
+</section>
+
+<section id="kpis" class="grid grid-cols-2 md:grid-cols-4 gap-3"></section>
+
+<section class="card">
+  <h2 class="font-semibold">Sleep Coach</h2>
+  <p class="text-xs text-slate-400">Automated analysis of your logged data: issues, warnings and recommendations.</p>
+  <div id="coach" class="space-y-2 mt-3"></div>
+</section>
+
+<section id="charts" class="grid md:grid-cols-2 gap-4"></section>
+
+<section class="grid md:grid-cols-2 gap-4">
+  <div class="card"><h3 class="text-sm font-semibold mb-2">Weekly averages (weeks start on Monday)</h3><div id="wl"></div></div>
+  <div class="card"><h3 class="text-sm font-semibold mb-2">Monthly averages</h3><div id="ml"></div></div>
+</section>
+
+<section class="card">
+  <h3 class="text-sm font-semibold mb-2">History (latest 30 entries)</h3>
+  <div id="hist" class="overflow-x-auto"></div>
+</section>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+let logs=JSON.parse(localStorage.getItem('sleepLogs')||'[]');
+let target=+localStorage.getItem('sleepTarget')||8;
+const save=()=>{localStorage.setItem('sleepLogs',JSON.stringify(logs));localStorage.setItem('sleepTarget',target)};
+const pad=n=>String(n).padStart(2,'0');
+const toMin=t=>{const[h,m]=t.split(':').map(Number);return h*60+m};
+const fmtH=m=>{m=Math.round(m);return Math.floor(m/60)+'h '+pad(m%60)+'m'};
+const clock=m=>{m=((Math.round(m)%1440)+1440)%1440;const h=Math.floor(m/60);return(h%12||12)+':'+pad(m%60)+' '+(h<12?'AM':'PM')};
+const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
+const sd=a=>{if(a.length<2)return 0;const m=avg(a);return Math.sqrt(avg(a.map(x=>(x-m)**2)))};
+const slope=a=>{const n=a.length,xm=(n-1)/2,ym=avg(a);let u=0,d=0;a.forEach((y,i)=>{u+=(i-xm)*(y-ym);d+=(i-xm)**2});return d?u/d:0};
+const corr=(a,b)=>{const ma=avg(a),mb=avg(b);let s=0;a.forEach((x,i)=>s+=(x-ma)*(b[i]-mb));const d=Math.sqrt(a.reduce((t,x)=>t+(x-ma)**2,0)*b.reduce((t,x)=>t+(x-mb)**2,0));return d?s/d:0};
+const iso=d=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+const lb=d=>d.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+const wk=d=>{const x=new Date(d);x.setDate(x.getDate()-(x.getDay()+6)%7);return x};
+const g=(m,k)=>{if(!m.has(k))m.set(k,[]);return m.get(k)};
+const DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const mlabel=(k,long)=>new Date(k+'-01T00:00').toLocaleDateString('en-GB',{month:long?'long':'short',year:long?'numeric':'2-digit'});
+
+function enrich(){
+  return logs.map(l=>{
+    const b=toMin(l.bed),w=toMin(l.wake);let dur=w-b;if(dur<=0)dur+=1440;
+    const bs=b<720?b+1440:b; // after-midnight bedtimes continue past 24:00
+    return{...l,dur,bs,w,mid:bs+dur/2,d:new Date(l.date+'T00:00:00')};
+  }).sort((a,b)=>a.d-b.d);
+}
+
+const kpi=(l,v,s,c='text-white')=>`<div class="card"><p class="text-xs text-slate-400">${l}</p><p class="text-xl font-extrabold ${c}">${v}</p><p class="text-xs text-slate-500">${s||'&nbsp;'}</p></div>`;
+const tone=s=>s>=75?'text-emerald-400':s>=50?'text-amber-400':'text-red-400';
+const row=(a,b,c)=>`<div class="flex justify-between py-1.5 border-b border-slate-800 text-sm"><span>${a}</span><span class="text-slate-400">${b}</span><span class="font-bold">${c}</span></div>`;
+const none='<p class="text-sm text-slate-500">No data yet.</p>';
+
+$('charts').innerHTML=[['c1','Daily sleep duration (last 30 entries)'],['c2','Bedtime and wake-up consistency'],['c3','Weekly average'],['c4','Monthly average'],['c5','Average by weekday'],['c6','Night quality distribution']]
+  .map(([i,t])=>`<div class="card"><h3 class="text-sm font-semibold mb-2">${t}</h3><div class="h-60"><canvas id="${i}"></canvas></div></div>`).join('');
+
+Chart.defaults.color='#94a3c4';Chart.defaults.borderColor='#222c4d';
+Chart.defaults.plugins.legend.display=false;Chart.defaults.font.family='Manrope';
+const charts={};
+function mk(id,cfg){
+  charts[id]&&charts[id].destroy();
+  cfg.options={responsive:true,maintainAspectRatio:false,...cfg.options};
+  charts[id]=new Chart($(id),cfg);
+}
+const bar=(id,labels,data,color,opt={})=>mk(id,{type:'bar',data:{labels,datasets:[{data,backgroundColor:color,borderRadius:6}]},options:{scales:{y:{beginAtZero:true,title:{display:true,text:'hours'}}},...opt}});
+
+function render(){
+  const E=enrich(),n=E.length,T=target*60;
+  const today=new Date();today.setHours(0,0,0,0);
+  const W=new Map(),M=new Map(),D=Array.from({length:7},()=>[]);
+  E.forEach(e=>{g(W,iso(wk(e.d))).push(e.dur);g(M,e.date.slice(0,7)).push(e.dur);D[(e.d.getDay()+6)%7].push(e.dur)});
+  const durs=E.map(e=>e.dur),bs=E.map(e=>e.bs),ws=E.map(e=>e.w);
+  const aD=avg(durs),sB=sd(bs),sW=sd(ws);
+  const cs=s=>Math.max(0,Math.round(100-s*100/120));
+  const dScore=Math.max(0,Math.round(100-(aD<420?420-aD:aD>540?aD-540:0)*100/180));
+  const score=Math.round(.5*dScore+.25*cs(sB)+.25*cs(sW));
+  const thisW=W.get(iso(wk(today)))||[],thisM=M.get(iso(today).slice(0,7))||[];
+  const recent7=E.filter(e=>{const x=(today-e.d)/864e5;return x>=0&&x<7});
+  const debt=recent7.reduce((t,e)=>t+Math.max(0,T-e.dur),0);
+  const free=E.filter(e=>[0,6].includes(e.d.getDay())),work=E.filter(e=>![0,6].includes(e.d.getDay()));
+  const sj=free.length&&work.length?Math.abs(avg(free.map(e=>e.mid))-avg(work.map(e=>e.mid))):null;
+  const last=E[n-1];
+
+  $('kpis').innerHTML=n?[
+    kpi('Last night',fmtH(last.dur),lb(last.d)+': '+clock(last.bs)+' to '+clock(last.w)),
+    kpi('Average sleep',fmtH(aD),'Goal: '+target+'h',aD>=420&&aD<=540?'text-emerald-400':'text-amber-400'),
+    kpi('This week (avg)',thisW.length?fmtH(avg(thisW)):'-',thisW.length+' day(s) logged since Monday'),
+    kpi('This month (avg)',thisM.length?fmtH(avg(thisM)):'-',thisM.length+' day(s) logged'),
+    kpi('Sleep score',score+'/100','Duration and consistency',tone(score)),
+    kpi('Sleep debt (7 days)',fmtH(debt),'Shortfall vs. goal',debt>=240?'text-red-400':debt>=90?'text-amber-400':'text-emerald-400'),
+    kpi('Bedtime consistency','±'+Math.round(sB)+' min','Score '+cs(sB)+'/100',tone(cs(sB))),
+    kpi('Wake-up consistency','±'+Math.round(sW)+' min','Score '+cs(sW)+'/100',tone(cs(sW))),
+    kpi('Average bedtime',clock(avg(bs)),'Average wake-up '+clock(avg(ws))),
+    kpi('Social jetlag',sj===null?'-':Math.round(sj)+' min','Weekday vs. weekend',sj>60?'text-red-400':sj>30?'text-amber-400':'text-emerald-400'),
+    kpi('Longest / shortest',fmtH(Math.max(...durs))+' / '+fmtH(Math.min(...durs)),'Across all entries'),
+    kpi('Days logged',n,'Since '+lb(E[0].d))
+  ].join(''):`<div class="card col-span-full text-sm text-slate-400">No data yet. Log your first entry above or import a CSV/JSON file to see your analytics.</div>`;
+
+  // ---------- Sleep coach (rule-based analysis) ----------
+  const I=[],p=(t,m)=>I.push([t,m]);
+  if(n<3)p('tip','Log at least 3 nights to unlock the analysis. More data gives more reliable insights.');
+  else{
+    E.forEach(e=>{if(e.dur<180||e.dur>840)p('bad',`The entry for ${lb(e.d)} (${fmtH(e.dur)}) looks unusual. Check AM/PM or the times for a possible typo; saving the same date overwrites it.`)});
+    const span=Math.min(7,Math.round((today-E[0].d)/864e5)+1),miss=span-recent7.length;
+    if(miss>0)p('warn',`${miss} of the last ${span} days have no entry. Logging daily keeps the averages and trends accurate.`);
+    const h=aD/60;
+    if(h<6)p('bad',`Average sleep is only ${fmtH(aD)}. Chronic short sleep affects focus, mood and immunity. Move your bedtime earlier by 30 minutes first.`);
+    else if(h<7)p('warn',`Average sleep is ${fmtH(aD)}, below the recommended 7–9 hours. Going to bed 15–30 minutes earlier would close the gap.`);
+    else if(h>9.5)p('warn',`Average sleep is ${fmtH(aD)}, which is high. Consistently long sleep can signal fatigue or poor sleep quality.`);
+    else p('good',`Average sleep of ${fmtH(aD)} is within the recommended 7–9 hour range.`);
+    if(sB>60)p('bad',`Bedtime is highly irregular (±${Math.round(sB)} min). A fixed bedtime is one of the most effective improvements; consider a nightly reminder.`);
+    else if(sB>30)p('warn',`Bedtime consistency is moderate (±${Math.round(sB)} min). Aim to keep it within 30 minutes.`);
+    else p('good',`Bedtime consistency is excellent (±${Math.round(sB)} min).`);
+    if(sW>60)p('bad',`Wake-up time is highly irregular (±${Math.round(sW)} min). A fixed wake-up time anchors your body clock.`);
+    else if(sW>30)p('warn',`Wake-up consistency is moderate (±${Math.round(sW)} min). Try to keep weekends close to your weekday schedule.`);
+    else p('good',`Wake-up consistency is excellent (±${Math.round(sW)} min).`);
+    if(sj!==null){
+      if(sj>60)p('bad',`Social jetlag is ${Math.round(sj)} minutes: your weekend sleep schedule differs sharply from weekdays. Keep the shift under 1 hour.`);
+      else if(sj>30)p('warn',`Social jetlag is ${Math.round(sj)} minutes. Reducing it can ease Monday fatigue.`);
+    }
+    if(debt>=240)p('bad',`Sleep debt over the last 7 days is ${fmtH(debt)}. Recover gradually with 30–45 extra minutes over the next few nights rather than one long sleep.`);
+    else if(debt>=90)p('warn',`Sleep debt over the last 7 days is ${fmtH(debt)}. An earlier night would help.`);
+    const l14=E.slice(-14).map(e=>e.bs);
+    if(l14.length>=7){const dr=slope(l14)*(l14.length-1);
+      if(dr>40)p('warn',`Your bedtime is drifting later (about +${Math.round(dr)} min across the last ${l14.length} entries). Correct it early before it becomes a habit.`);
+      else if(dr<-40)p('good',`Your bedtime is moving earlier (about ${Math.round(-dr)} min across the last ${l14.length} entries). Good progress.`);}
+    if(n>=7){const r=corr(bs,durs);
+      if(r<-.5)p('tip',`Later bedtimes are strongly linked to shorter sleep (correlation ${r.toFixed(2)}), because your wake-up time stays roughly fixed. Sleeping earlier directly increases your sleep time.`);}
+    const wd=D.map((a,i)=>[i,avg(a),a.length]).filter(x=>x[2]>=2).sort((a,b)=>a[1]-b[1]);
+    if(wd.length>=3&&wd[wd.length-1][1]-wd[0][1]>45)p('tip',`Your shortest sleep falls on ${DAYS[wd[0][0]]} (${fmtH(wd[0][1])}) and your longest on ${DAYS[wd[wd.length-1][0]]} (${fmtH(wd[wd.length-1][1])}). Plan an earlier night before ${DAYS[wd[0][0]]}.`);
+    if(avg(bs)>1470)p('warn',`Your average bedtime is ${clock(avg(bs))}. Sleeping between 10:30 PM and midnight generally aligns better with the body clock.`);
+    const short=E.slice(-14).filter(e=>e.dur<360).length;
+    if(short>=3)p('warn',`${short} of your last 14 entries were under 6 hours. This pattern accumulates fatigue.`);
+    const set=new Set(E.map(e=>e.date));let st=0,c=new Date(last.d);while(set.has(iso(c))){st++;c.setDate(c.getDate()-1)}
+    if(st>=7)p('good',`You have logged ${st} consecutive days.`);
+    p('tip',`Based on your average wake-up time (${clock(avg(ws))}) and a ${target}-hour goal, your ideal bedtime is about ${clock(avg(ws)-T-15)} (including ~15 minutes to fall asleep).`);
+    p('tip',['Avoid screens for an hour before bed; blue light suppresses melatonin.','Avoid caffeine after 2 PM; its effects can last 6+ hours.','Get 10 minutes of morning daylight to help you fall asleep earlier at night.'][today.getDate()%3]);
+  }
+  const ord={bad:0,warn:1,tip:2,good:3},lab={bad:'Critical',warn:'Attention',tip:'Insight',good:'On track'};
+  const sty={bad:'border-red-500 bg-red-500/10',warn:'border-amber-500 bg-amber-500/10',tip:'border-indigo-400 bg-indigo-400/10',good:'border-emerald-500 bg-emerald-500/10'};
+  $('coach').innerHTML=I.sort((a,b)=>ord[a[0]]-ord[b[0]]).map(([t,m])=>`<div class="border-l-4 rounded-r-lg px-3 py-2 text-sm ${sty[t]}"><span class="font-bold">${lab[t]}:</span> ${m}</div>`).join('');
+
+  // ---------- Charts ----------
+  const E30=E.slice(-30),col=h=>h<6?'#f87171':h<7?'#fbbf24':h<=9?'#34d399':'#38bdf8';
+  const h30=E30.map(e=>+(e.dur/60).toFixed(2));
+  mk('c1',{data:{labels:E30.map(e=>lb(e.d)),datasets:[
+    {type:'bar',label:'Sleep',data:h30,backgroundColor:h30.map(col),borderRadius:5},
+    {type:'line',label:'Goal',data:E30.map(()=>target),borderColor:'#a5b4fc',borderDash:[6,5],pointRadius:0,borderWidth:2}]},
+    options:{plugins:{legend:{display:true}},scales:{y:{beginAtZero:true,title:{display:true,text:'hours'}}}}});
+  mk('c2',{type:'line',data:{labels:E30.map(e=>lb(e.d)),datasets:[
+    {label:'Bedtime',data:E30.map(e=>e.bs),borderColor:'#a78bfa',backgroundColor:'#a78bfa',tension:.3,pointRadius:3},
+    {label:'Wake-up time',data:E30.map(e=>e.w+1440),borderColor:'#fbbf24',backgroundColor:'#fbbf24',tension:.3,pointRadius:3}]},
+    options:{plugins:{legend:{display:true},tooltip:{callbacks:{label:c=>c.dataset.label+': '+clock(c.parsed.y)}}},scales:{y:{ticks:{callback:v=>clock(v)}}}}});
+  const wk10=[...W].sort().slice(-10);
+  bar('c3',wk10.map(([k])=>lb(new Date(k+'T00:00'))),wk10.map(([,a])=>+(avg(a)/60).toFixed(2)),wk10.map(([,a])=>col(avg(a)/60)),
+    {plugins:{tooltip:{callbacks:{afterLabel:c=>wk10[c.dataIndex][1].length+'/7 days logged'}}}});
+  const mo=[...M].sort();
+  bar('c4',mo.map(([k])=>mlabel(k)),mo.map(([,a])=>+(avg(a)/60).toFixed(2)),mo.map(([,a])=>col(avg(a)/60)),
+    {plugins:{tooltip:{callbacks:{afterLabel:c=>mo[c.dataIndex][1].length+' days logged'}}}});
+  bar('c5',DAYS,D.map(a=>+(avg(a)/60).toFixed(2)),D.map(a=>col(avg(a)/60)));
+  const cnt=[0,0,0,0];durs.forEach(m=>cnt[m<360?0:m<420?1:m<=540?2:3]++);
+  mk('c6',{type:'doughnut',data:{labels:['Under 6h','6–7h','7–9h (ideal)','Over 9h'],datasets:[{data:cnt,backgroundColor:['#f87171','#fbbf24','#34d399','#38bdf8'],borderColor:'#111830'}]},options:{plugins:{legend:{display:true,position:'bottom'}}}});
+
+  // ---------- Lists ----------
+  $('wl').innerHTML=[...W].sort().reverse().slice(0,8).map(([k,a])=>{const s=new Date(k+'T00:00'),e=new Date(s);e.setDate(s.getDate()+6);return row(lb(s)+' – '+lb(e),a.length+'/7 days',fmtH(avg(a)))}).join('')||none;
+  $('ml').innerHTML=mo.slice().reverse().map(([k,a])=>row(mlabel(k,1),a.length+' days',fmtH(avg(a)))).join('')||none;
+  $('hist').innerHTML=n?`<table class="w-full text-sm"><thead class="text-slate-400 text-left"><tr><th class="py-1">Date</th><th>Bedtime</th><th>Wake-up</th><th>Duration</th><th></th></tr></thead><tbody>`+
+    E.slice(-30).reverse().map(e=>`<tr class="border-t border-slate-800"><td class="py-1.5">${DAYS[(e.d.getDay()+6)%7]}, ${lb(e.d)}</td><td>${clock(e.bs)}</td><td>${clock(e.w)}</td><td class="font-bold">${fmtH(e.dur)}</td><td><button class="text-red-400 text-xs" onclick="del('${e.date}')">Delete</button></td></tr>`).join('')+'</tbody></table>':none;
+}
+
+// ---------- Manual entry ----------
+const msg=(t,c)=>{$('msg').textContent=t;$('msg').className='text-xs mt-2 '+c};
+const preview=()=>{if($('bed').value&&$('wake').value){let d=toMin($('wake').value)-toMin($('bed').value);if(d<=0)d+=1440;msg('Duration: '+fmtH(d),'text-slate-400')}};
+$('bed').oninput=$('wake').oninput=preview;
+$('date').value=iso(new Date());$('tgt').value=target;
+$('tgt').onchange=()=>{target=Math.min(10,Math.max(5,+$('tgt').value||8));save();render()};
+$('add').onclick=()=>{
+  const date=$('date').value,bed=$('bed').value,wake=$('wake').value;
+  if(!date||!bed||!wake)return msg('Please fill in the date, bedtime and wake-up time.','text-red-400');
+  if(bed===wake)return msg('Bedtime and wake-up time cannot be identical.','text-red-400');
+  logs=logs.filter(l=>l.date!==date);logs.push({date,bed,wake});save();render();msg('Entry saved. Saving the same date again updates it.','text-emerald-400');
+};
+const del=d=>{logs=logs.filter(l=>l.date!==d);save();render()};
+const clr=()=>{if(confirm('Delete all sleep data? This cannot be undone.')){logs=[];save();render()}};
+
+// ---------- Export ----------
+function exp(type){
+  const sorted=[...logs].sort((a,b)=>a.date.localeCompare(b.date));
+  const txt=type==='csv'?'date,bedtime,wake\n'+sorted.map(l=>`${l.date},${l.bed},${l.wake}`).join('\n'):JSON.stringify(sorted,null,2);
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt],{type:type==='csv'?'text/csv':'application/json'}));a.download='sleep-data.'+type;a.click();
+}
+
+// ---------- Import (CSV / JSON) ----------
+const normTime=s=>{const m=String(s??'').trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(am|pm)?$/i);if(!m)return null;let h=+m[1];const mi=+m[2],ap=(m[3]||'').toLowerCase();
+  if(ap){if(h<1||h>12)return null;h=h%12+(ap==='pm'?12:0)}if(h>23||mi>59)return null;return pad(h)+':'+pad(mi)};
+const normDate=s=>{s=String(s??'').trim();let m,y,mo,d;
+  if(m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))[y,mo,d]=[+m[1],+m[2],+m[3]];
+  else if(m=s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/))[d,mo,y]=[+m[1],+m[2],+m[3]];
+  else return null;
+  const dt=new Date(y,mo-1,d);return dt.getFullYear()===y&&dt.getMonth()===mo-1&&dt.getDate()===d?iso(dt):null};
+function parseRows(text,name){
+  if(/\.json$/i.test(name)||/^\s*[\[{]/.test(text)){
+    const j=JSON.parse(text),a=Array.isArray(j)?j:(j.logs||j.entries);
+    if(!Array.isArray(a))throw new Error('JSON must be an array of entries.');
+    return a.map(r=>[r.date,r.bed??r.bedtime,r.wake??r.wake_time??r.waketime]);
+  }
+  const cells=text.split(/\r?\n/).filter(l=>l.trim()).map(l=>l.split(/[,;\t]/).map(c=>c.replace(/^["']|["']$/g,'').trim()));
+  if(!cells.length)throw new Error('The file is empty.');
+  let ix=[0,1,2];
+  if(!normDate(cells[0][0])){
+    const h=cells.shift().map(c=>c.toLowerCase());
+    ix=[h.findIndex(c=>/date/.test(c)),h.findIndex(c=>/bed|sleep/.test(c)),h.findIndex(c=>/wake|up/.test(c))];
+    if(ix.includes(-1))throw new Error('Header must contain date, bedtime and wake columns.');
+  }
+  return cells.map(c=>ix.map(i=>c[i]));
+}
+const imsg=(t,c)=>{$('imsg').textContent=t;$('imsg').className='text-xs mt-2 '+c};
+async function importFile(f){
+  if(!f)return;
+  try{
+    let add=0,upd=0,bad=0;
+    parseRows(await f.text(),f.name).forEach(([d,b,w])=>{
+      d=normDate(d);b=normTime(b);w=normTime(w);
+      if(!d||!b||!w||b===w){bad++;return}
+      const i=logs.findIndex(l=>l.date===d),r={date:d,bed:b,wake:w};
+      if(i>=0){logs[i]=r;upd++}else{logs.push(r);add++}
+    });
+    if(add+upd){save();render()}
+    imsg(`Import complete: ${add} added, ${upd} updated, ${bad} skipped (invalid rows).`,add+upd?'text-emerald-400':'text-amber-400');
+  }catch(e){imsg('Import failed: '+e.message,'text-red-400')}
+  $('file').value='';
+}
+$('file').onchange=e=>importFile(e.target.files[0]);
+const dz=$('drop');
+['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('on')}));
+['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('on')}));
+dz.addEventListener('drop',e=>importFile(e.dataTransfer.files[0]));
+
+render();
+</script>
+</body>
+</html>
